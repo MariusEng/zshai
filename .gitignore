@@ -1,0 +1,62 @@
+# --- build output ---
+/zshai
+/dist/
+*.test
+*.out
+coverage.*
+
+# --- local toolchain (Go, GOPATH, build cache) ---
+/.tools/
+
+# --- generated: the full az catalog (the gzipped copy in internal/azcat is committed) ---
+/catalog/az.json
+
+# --- personal data: never commit ---
+# ranked shell history (scripts/rank-history.zsh output)
+*history-rank*.txt
+*_history
+.zsh_history
+# zshai's own config, log and undo state, if they end up in the tree
+config.json
+!tests/**/config.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+# practice runs keep their state here
+.zshai/
+
+# --- secrets ---
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+id_rsa*
+id_ed25519*
+*.secret
+secrets.*
+.netrc
+.azure/
+
+# --- Python (pty tests, practice scripts) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- editors / OS ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+.claude/settings.local.json
+
+# --- local notes with real machine names ---
+/LOCAL.md
+*.local.md

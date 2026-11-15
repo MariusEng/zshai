@@ -1,0 +1,33 @@
+vist running_processes.json formatert som en tabell
+vis users.json som tabell
+vis bare navn og e-post fra users.json
+vis config.json pent formatert
+vis sales.csv som en tabell
+vis data_semicolon.csv som tabell
+vis report.tsv med kolonnene på linje
+vis de siste 5 linjene i app.log
+vis bare ERROR-linjene i app.log
+tell hvor mange linjer det er av hvert loggnivå i app.log
+vis settings.yaml
+vis summen av beløp-kolonnen i sales.csv
+sorter sales.csv etter beløp, størst først, som tabell
+show running_processes.json sorted by cpu as a table
+vis linje 10 til 15 i app.log med linjenummer
+tell antall objekter i running_processes.json
+vis hvilke felter som finnes i users.json
+vis prosessene i running_processes.json som bruker mer enn 10% cpu
+vis users.json sortert etter alder
+vis notes.md
+vis running_processes.json som tabell med bare pid, cpu og command
+vis config.json som nøkkel = verdi-linjer
+konverter sales.csv til json
+vis de 3 prosessene som bruker mest minne i running_processes.json
+vis app.log uten DEBUG-linjer, bare de siste 5
+show the total amount per product in sales.csv
+vis users.json med navn og antall roller
+vis users.json sortert etter alder som tabell
+vis sales.csv sortert etter dato, nyeste først
+vis de 2 dyreste salgene i sales.csv
+vis prosessene til root i running_processes.json som tabell
+vis prosessene til alice i running_processes.json som tabell
+vis prosessene i running_processes.json som bruker mer enn 10% cpu, som tabell
