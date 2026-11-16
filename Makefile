@@ -12,7 +12,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.bui
 # the plugin carries the same version, so `zshai: status` can tell when the two don't match
 PLUGIN_SED := sed 's/^typeset -g ZSHAI_PLUGIN_VERSION=dev /typeset -g ZSHAI_PLUGIN_VERSION=$(VERSION) /' 
 
-.PHONY: build test catalog dist install clean
+.PHONY: build test catalog dist install clean llama install-model bundle
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o zshai ./cmd/zshai
 
@@ -37,6 +37,56 @@ install: build
 	install -d $(HOME)/.local/bin $${ZSH_CUSTOM:-$(HOME)/.oh-my-zsh/custom}/plugins/zshai
 	install -m 755 zshai $(HOME)/.local/bin/zshai
 	$(PLUGIN_SED) plugin/zshai.plugin.zsh > $${ZSH_CUSTOM:-$(HOME)/.oh-my-zsh/custom}/plugins/zshai/zshai.plugin.zsh
+
+# --- the bundled model (see README "The built-in model") ---
+LLAMA_TAG ?= b12287
+HOST_OS   := $(shell uname -s | tr A-Z a-z)
+HOST_ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+PLAT      := $(HOST_OS)-$(HOST_ARCH)
+CMAKE     ?= $(or $(wildcard $(CURDIR)/.tools/cmake-*/bin/cmake),cmake)
+MODEL     ?= $(lastword $(sort $(wildcard models/zshai-mini-*.gguf)))
+DATA_DIR  ?= $${XDG_DATA_HOME:-$(HOME)/.local/share}/zshai
+# Linux: portable x86-64 (AVX2), libstdc++ linked in. macOS: Metal, shaders embedded.
+LLAMA_FLAGS_linux  := -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF \
+                      -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+LLAMA_FLAGS_darwin := -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_NATIVE=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+
+# Build llama.cpp's llama-server (one self-contained binary) for this machine.
+llama:
+	test -d .tools/llama.cpp || git clone -q --depth 1 --branch $(LLAMA_TAG) https://github.com/ggml-org/llama.cpp.git .tools/llama.cpp
+	$(CMAKE) -S .tools/llama.cpp -B .tools/llama.cpp/build-$(PLAT) -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+	  -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF $(LLAMA_FLAGS_$(HOST_OS))
+	$(CMAKE) --build .tools/llama.cpp/build-$(PLAT) --target llama-server -j
+	install -d build/$(PLAT)
+	install -m 755 .tools/llama.cpp/build-$(PLAT)/bin/llama-server build/$(PLAT)/llama-server
+	strip build/$(PLAT)/llama-server 2>/dev/null || true
+
+# Install llama-server and the model next to zshai (~/.local/share/zshai).
+install-model:
+	test -n "$(MODEL)" || { echo "no models/zshai-mini-*.gguf (download one, or MODEL=path)"; exit 1; }
+	test -x build/$(PLAT)/llama-server || $(MAKE) llama
+	install -d $(DATA_DIR)/models
+	install -m 755 build/$(PLAT)/llama-server $(DATA_DIR)/llama-server
+	install -m 644 $(MODEL) $(DATA_DIR)/models/
+	install -m 644 third_party/llama.cpp-LICENSE $(DATA_DIR)/llama.cpp-LICENSE
+
+# A release bundle for one platform: zshai + plugin + llama-server + model + install.sh.
+#   make bundle OS=darwin ARCH=arm64   (llama-server from build/darwin-arm64/, built on that platform)
+OS   ?= $(HOST_OS)
+ARCH ?= $(HOST_ARCH)
+bundle: dist
+	test -x build/$(OS)-$(ARCH)/llama-server || { echo "build/$(OS)-$(ARCH)/llama-server is missing: run make llama on that platform"; exit 1; }
+	test -n "$(MODEL)" || { echo "no models/zshai-mini-*.gguf"; exit 1; }
+	rm -rf dist/zshai-$(VERSION)-$(OS)-$(ARCH)
+	install -d dist/zshai-$(VERSION)-$(OS)-$(ARCH)/bin dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/models
+	install -m 755 dist/zshai-$(OS)-$(ARCH) dist/zshai-$(VERSION)-$(OS)-$(ARCH)/bin/zshai
+	install -m 755 build/$(OS)-$(ARCH)/llama-server dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/llama-server
+	install -m 644 $(MODEL) dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/models/
+	install -m 644 dist/zshai.plugin.zsh dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/zshai.plugin.zsh
+	install -m 644 third_party/llama.cpp-LICENSE LICENSE README.md dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/
+	install -m 755 scripts/install.sh dist/zshai-$(VERSION)-$(OS)-$(ARCH)/install.sh
+	tar -C dist -czf dist/zshai-$(VERSION)-$(OS)-$(ARCH).tar.gz zshai-$(VERSION)-$(OS)-$(ARCH)
+	ls -lh dist/zshai-$(VERSION)-$(OS)-$(ARCH).tar.gz
 
 clean:
 	rm -f zshai

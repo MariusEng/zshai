@@ -1,6 +1,11 @@
 # --- build output ---
 /zshai
 /dist/
+/build/
+# model weights: too big for git, shipped in release bundles
+/models/
+*.gguf
+*.safetensors
 *.test
 *.out
 coverage.*

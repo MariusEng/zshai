@@ -62,9 +62,13 @@ CANNED.update({
 })
 
 
+SYSTEMS = []  # the system prompts the fake model got
+
+
 class FakeModel(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        SYSTEMS.append(body["messages"][0]["content"])
         user = [m["content"] for m in body["messages"] if m["role"] == "user"][0]
         req = [l for l in user.splitlines() if l.startswith("request: ")][0][len("request: "):]
         table = FIX_CANNED if "failed command:" in user else CANNED
@@ -354,6 +358,13 @@ SCENARIOS = {
     "meta-help-and-request-fallthrough": (
         [("zshai: hjelp\r", 0.8), ("zshai: status på repoet\r", 2)], None,
         lambda w, s, a: has(s, "zshai: hvordan lister jeg bare mapper?") + (["status meta swallowed a request"] if "model:" in s else [])),
+    # zshai: prompt opens prompt.txt in $EDITOR; the edited prompt goes to the model
+    "prompt-edit-reaches-model": (
+        [("zshai: prompt\r", 1.5), ("zshai: hvor mange rader er det i sales.csv?\r", 2)],
+        {"EDITOR": "sh -c 'echo \"- Liker korte svar (TEST-PREF).\" >> \"$1\"' ed"},
+        lambda w, s, a: (["prompt.txt not edited"] if "TEST-PREF" not in open(f"{w}/.cfg/prompt.txt").read() else [])
+        + ([] if SYSTEMS and "TEST-PREF" in SYSTEMS[-1] and "About this machine" in SYSTEMS[-1] and "{os}" not in SYSTEMS[-1]
+           else ["edited prompt not sent to the model"]) + has(s, "\n3")),
     "shell-lines-stay-shell": (
         [("ls\r", 0.6), ("69\r", 0.6), ("gst\r", 0.8), (",echo komma\r", 0.6)], {"_cfg": {"autoDetect": True}},
         lambda w, s, a: has(s, "sales.csv", "command not found: 69", "komma")

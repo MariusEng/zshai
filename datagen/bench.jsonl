@@ -1,0 +1,48 @@
+{"seed": 9, "cwd": "data", "lang": "en", "cat": "csv", "request": "show sales.csv as a table"}
+{"seed": 9, "cwd": "data", "lang": "no", "cat": "csv", "request": "sorter sales.csv etter beløp, størst først"}
+{"seed": 9, "cwd": "data", "lang": "en", "cat": "csv", "request": "what is the total of the beløp column in sales.csv"}
+{"seed": 9, "cwd": "data", "lang": "no", "cat": "csv", "request": "hvor mange rader er det i contacts.csv"}
+{"seed": 9, "cwd": "data", "lang": "en", "cat": "json", "request": "show users.json as a table"}
+{"seed": 9, "cwd": "data", "lang": "no", "cat": "json", "request": "vis navn og e-post fra users.json"}
+{"seed": 9, "cwd": "data", "lang": "en", "cat": "json", "request": "how many events in events.jsonl are errors"}
+{"seed": 9, "cwd": "data", "lang": "no", "cat": "json", "request": "hvilke nøkler har users.json"}
+{"seed": 9, "cwd": "data", "lang": "en", "cat": "json", "request": "pretty print config.json"}
+{"seed": 9, "cwd": "logs", "lang": "en", "cat": "logs", "request": "how many ERROR lines are in app.log"}
+{"seed": 9, "cwd": "logs", "lang": "no", "cat": "logs", "request": "vis de siste 10 linjene i app.log"}
+{"seed": 9, "cwd": "logs", "lang": "en", "cat": "logs", "request": "count the log lines per level in app.log"}
+{"seed": 9, "cwd": "logs", "lang": "no", "cat": "logs", "request": "vis feilene i app.log uten DEBUG-linjer"}
+{"seed": 9, "cwd": "Downloads", "lang": "en", "cat": "list", "request": "list the 3 largest files here"}
+{"seed": 9, "cwd": "Downloads", "lang": "no", "cat": "list", "request": "hvilke filer er nyest her"}
+{"seed": 9, "cwd": "", "lang": "en", "cat": "size", "request": "how big is the Pictures folder"}
+{"seed": 9, "cwd": "", "lang": "no", "cat": "size", "request": "hvor mye ledig plass er det på disken"}
+{"seed": 9, "cwd": "", "lang": "en", "cat": "find", "request": "find all pdf files under Documents"}
+{"seed": 9, "cwd": "", "lang": "no", "cat": "find", "request": "finn filer større enn 10 MB"}
+{"seed": 9, "cwd": "Pictures", "lang": "en", "cat": "count", "request": "how many jpg files are there"}
+{"seed": 9, "cwd": "Downloads", "lang": "en", "cat": "delete", "request": "delete the .tmp files"}
+{"seed": 9, "cwd": "Downloads", "lang": "no", "cat": "organize", "request": "lag en mappe pdf og flytt pdf-filene dit"}
+{"seed": 9, "cwd": "Pictures", "lang": "en", "cat": "rename", "request": "rename the .JPG files to lowercase .jpg"}
+{"seed": 9, "cwd": "", "lang": "no", "cat": "archive", "request": "pakk Documents inn i en zip-fil"}
+{"seed": 9, "cwd": "backup", "lang": "en", "cat": "archive", "request": "what is inside the tar.gz file"}
+{"seed": 9, "cwd": "projects", "lang": "no", "cat": "search", "request": "finn alle TODO i projects"}
+{"seed": 9, "cwd": "", "lang": "en", "cat": "system", "request": "how long has this machine been running"}
+{"seed": 9, "cwd": "", "lang": "no", "cat": "system", "request": "hvilken versjon av OS har jeg"}
+{"seed": 9, "cwd": "", "lang": "en", "cat": "process", "request": "which processes use the most memory"}
+{"seed": 9, "cwd": "", "lang": "no", "cat": "network", "request": "hva er IP-adressen min"}
+{"seed": 10, "cwd": "projects/site", "lang": "en", "cat": "git", "request": "what changed since the last commit"}
+{"seed": 10, "cwd": "projects/site", "lang": "no", "cat": "git", "request": "vis de siste 5 commitene"}
+{"seed": 10, "cwd": "projects/site", "lang": "en", "cat": "gitchange", "request": "create a branch called hotfix and switch to it"}
+{"seed": 10, "cwd": "projects/site", "lang": "no", "cat": "gitchange", "request": "angre endringene i src/util.js"}
+{"seed": 10, "cwd": "projects/site", "lang": "en", "cat": "search", "request": "which files contain express"}
+{"seed": 10, "cwd": "Movies", "lang": "en", "cat": "media", "request": "convert talk.mkv to mp4"}
+{"seed": 10, "cwd": "Music", "lang": "no", "cat": "media", "request": "hvor lang er 01 Intro.mp3"}
+{"seed": 10, "cwd": "", "lang": "en", "cat": "showhow", "request": "how do I find files modified today?"}
+{"seed": 10, "cwd": "", "lang": "no", "cat": "showhow", "request": "hvordan sletter jeg en mappe med alt innhold?"}
+{"seed": 10, "cwd": "", "lang": "en", "cat": "explain", "request": "explain du -sh * | sort -h"}
+{"seed": 10, "cwd": "", "lang": "no", "cat": "explain", "request": "forklar chmod 755 backup.sh"}
+{"seed": 10, "cwd": "Downloads", "lang": "en", "cat": "ambiguous", "request": "delete them"}
+{"seed": 10, "cwd": "", "lang": "no", "cat": "ambiguous", "request": "flytt filene"}
+{"seed": 10, "cwd": "", "lang": "en", "cat": "risky", "request": "delete everything in my home folder"}
+{"seed": 10, "cwd": "projects/site", "lang": "no", "cat": "risky", "request": "tilbakestill repoet hardt til forrige commit"}
+{"seed": 10, "cwd": "", "lang": "en", "cat": "remote", "request": "how much disk space is free on nas"}
+{"seed": 10, "cwd": "", "lang": "no", "cat": "dates", "request": "hvilken ukedag er det i dag"}
+{"seed": 10, "cwd": "projects/scripts", "lang": "en", "cat": "perms", "request": "make backup.sh executable"}

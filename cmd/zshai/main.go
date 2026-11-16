@@ -31,7 +31,9 @@ import (
 	"github.com/MariusEng/zshai/internal/dryrun"
 	"github.com/MariusEng/zshai/internal/journal"
 	"github.com/MariusEng/zshai/internal/llm"
+	"github.com/MariusEng/zshai/internal/localmodel"
 	"github.com/MariusEng/zshai/internal/msg"
+	"github.com/MariusEng/zshai/internal/prompt"
 	"github.com/MariusEng/zshai/internal/risk"
 	"github.com/MariusEng/zshai/internal/router"
 	"github.com/MariusEng/zshai/internal/shell"
@@ -79,6 +81,11 @@ func main() {
 		if !ok {
 			os.Exit(3)
 		}
+		if path, edit := strings.CutPrefix(out, editMarker); edit {
+			// exit 4: the plugin opens this file in $EDITOR
+			fmt.Println(path)
+			os.Exit(4)
+		}
 		fmt.Print(out)
 	case "colors", "colours":
 		// for the plugin: the theme's colour codes. --bg dark|light from the terminal.
@@ -104,6 +111,25 @@ func main() {
 		}
 	case "check":
 		cmdCheck(os.Args[2:])
+	case "model":
+		// the bundled model (server "local"): status | start | stop
+		sub := "status"
+		if len(os.Args) > 2 {
+			sub = os.Args[2]
+		}
+		switch sub {
+		case "start":
+			if err := localmodel.Ensure(30 * time.Second); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		case "stop":
+			if !localmodel.Stop() {
+				fmt.Println("llama-server was not started by zshai")
+			}
+			return
+		}
+		fmt.Println(localmodel.Status())
 	case "az-catalog":
 		cmdAzCatalog()
 	case "--lang", "lang":
@@ -138,6 +164,7 @@ func usage() {
   zshai log [n] [--changed]    the latest requests from the log (~/.local/state/zshai/zshai.db)
   zshai log --id <id>          one request: prompts, model replies, effects
   zshai meta -- 'zshai: help'  zshai's own commands (exit 3: not one, it's a request)
+  zshai model [start|stop]     the bundled model (config "server": "local")
   zshai az-catalog             re-extract the Azure CLI catalog from your az
   zshai --lang en|no
 `)
@@ -337,7 +364,6 @@ func cmdAsk(args []string) {
 	if failed != nil {
 		turn.Mode, turn.FixOf = "fix", failed.ID
 	}
-	journal.SetSystemPrompt(llm.System)
 	defer func() {
 		turn.TotalMs = time.Since(t0).Milliseconds()
 		journal.LogTurn(turn)
@@ -357,6 +383,20 @@ func cmdAsk(args []string) {
 	venv := validate.Env{OS: ci.OS, Cwd: *cwd, Aliases: aliases, Functions: loadFunctions(), Az: cat, AzDef: azDef}
 
 	client := llm.Client{Server: cfg.Server, Model: cfg.Model, APIKey: cfg.APIKey, Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second}
+	if localmodel.IsLocal(cfg.Server) {
+		// the bundled model: start llama-server on first use
+		if err := localmodel.Ensure(20 * time.Second); err != nil {
+			turn.Outcome, turn.Error = "error", err.Error()
+			emit(map[string]string{"status": "error", "msg": L.Unreachable(err)})
+			return
+		}
+		client.Server, client.Model = localmodel.URL(), localmodel.Model
+		turn.Model = localmodel.Model
+	}
+	// the system prompt: the user's template (zshai: prompt) around zshai's built-in rules
+	tmpl, _ := prompt.Template()
+	client.System = prompt.Render(tmpl, llm.SystemFor(client.Model), prompt.MachineValues(ci.OSName, ci.Flavour, ci.Manager, cfg.Language))
+	journal.SetSystemPrompt(client.System)
 	userMsg := ci.Render(fullReq)
 	if failed != nil {
 		userMsg += fmt.Sprintf("\nThe command you gave for this request failed.\nfailed command: %s\nexit code: %d\nerror output:\n%s\n"+
@@ -402,6 +442,9 @@ func cmdAsk(args []string) {
 			savePendingAsk(&turnState{ID: id, Request: fullReq, Asked: ans.Ask, Started: time.Now()})
 			emit(map[string]string{"status": "answer", "msg": ans.Ask, "followup": "1"})
 			return
+		} else if ans.Script == "" && len(ans.Needs) > 0 && installed(ans.Needs[0], cfg) {
+			// small models sometimes ask for a program that is already there: send it back
+			problems = []string{ans.Needs[0] + " is installed (it is in \"have:\"); write the command with it and leave n: empty"}
 		} else if ans.Script == "" && len(ans.Needs) > 0 {
 			emitNeeds(ans.Needs[0], request, *cwd, cfg, L, &turn, id)
 			return
@@ -588,6 +631,19 @@ func emitNeeds(tool, request, cwd string, cfg config.Config, L msg.L, turn *jour
 	saveTurn(ts)
 	emit(map[string]string{"status": "install", "id": id, "cmd": inst, "level": "install", "label": L.Label(risk.Install),
 		"question": L.Needs(tool, inst, ""), "keys": L.Keys(risk.Install), "request": request, "cancel": L.Cancelled()})
+}
+
+// installed: the program (or its package's binary for this package manager) is on PATH.
+func installed(tool string, cfg config.Config) bool {
+	if _, err := exec.LookPath(tool); err == nil {
+		return true
+	}
+	if t, ok := tools.Lookup(tool); ok {
+		if _, err := exec.LookPath(t.BinFor(tools.Manager(cfg.PackageManager))); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(xs []string, s string) bool {

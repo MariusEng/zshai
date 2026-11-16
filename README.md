@@ -7,9 +7,9 @@ depending on how risky it is. Every other line you type is an ordinary shell com
 theme, aliases and history stay as they are.
 
 It works on **macOS and Linux** (Homebrew, apt and pacman; dnf is best-effort). It knows the
-common Unix tools (`jq`, `rg`, `fd`, `ffmpeg`, …), git and the Azure CLI. It talks to **your own
-model** through any OpenAI-compatible server, such as LM Studio, llama.cpp or Ollama. Nothing is
-sent anywhere else.
+common Unix tools (`jq`, `rg`, `fd`, `ffmpeg`, …), git and the Azure CLI. It runs **its own small
+model on your machine** (`zshai-mini`, served by a bundled llama.cpp), or talks to any
+OpenAI-compatible server you choose, such as LM Studio or Ollama. Nothing is sent anywhere else.
 
 ```
 ➜  data zshai: how many rows are in sales.csv?
@@ -50,10 +50,10 @@ sent anywhere else.
 
 ## Requirements
 - zsh 5.8 or newer, and [oh-my-zsh](https://ohmyz.sh) (the plugin can also be sourced directly).
-- An OpenAI-compatible model server you control. It was developed with
-  [LM Studio](https://lmstudio.ai) serving `qwen/qwen3-coder-30b`; a code model of similar size
-  is recommended.
-- Go 1.27 or newer to build from source, or a prebuilt binary from `make dist`.
+- A model: the built-in `zshai-mini` (see below), or an OpenAI-compatible server you control.
+  zshai was developed with [LM Studio](https://lmstudio.ai) serving `qwen/qwen3-coder-30b`, which
+  is also the teacher `zshai-mini` was trained from.
+- Go 1.27 or newer to build from source.
 
 ## Install
 ### From source
@@ -80,6 +80,25 @@ Copy the binary for that machine to `~/.local/bin/zshai` and the plugin file to
 `~/.oh-my-zsh/custom/plugins/zshai/zshai.plugin.zsh`. Use both from the same build, because
 `zshai: status` warns when they don't match.
 
+### The built-in model
+`zshai-mini` is a fine-tuned Qwen2.5-Coder-0.5B, quantized to GGUF (about 400 MB). zshai runs it
+with llama.cpp's `llama-server`, which it starts on 127.0.0.1:8093 on the first request and leaves
+running (`zshai model stop` ends it). On a Mac it uses the GPU (Metal); on Linux the CPU is enough.
+
+The model weights are too big for git; a release bundle has everything for one platform:
+```zsh
+tar xzf zshai-<version>-darwin-arm64.tar.gz
+zshai-<version>-darwin-arm64/install.sh    # ~/.local/bin/zshai, ~/.local/share/zshai/{llama-server,models/}, the plugin
+```
+From source, with a model file in `models/`:
+```zsh
+make install          # zshai + plugin
+make install-model    # builds llama-server for this machine (needs cmake and a C++ compiler) and installs it with the model
+zshai model           # where the model is and whether it is running
+```
+`"server": "local"` (the default) uses it. Set `server` and `model` in the config to use another
+model server instead. How the model is made: [Training zshai-mini](#training-zshai-mini).
+
 ### Without oh-my-zsh
 ```zsh
 source /path/to/zshai.plugin.zsh     # in ~/.zshrc, with the zshai helper on PATH
@@ -90,15 +109,21 @@ Settings live in `~/.config/zshai/config.json`. `zshai: config` shows the file a
 The important ones are the model server and the model:
 ```json
 {
-  "server": "http://localhost:1234/v1",
-  "model": "qwen/qwen3-coder-30b",
+  "server": "local",
   "language": "en",
   "theme": "auto"
 }
 ```
+or, with your own model server:
+```json
+{
+  "server": "http://localhost:1234/v1",
+  "model": "qwen/qwen3-coder-30b"
+}
+```
 | Key | Meaning |
 |---|---|
-| `server`, `model` | OpenAI-compatible base URL and model id (default: LM Studio on localhost) |
+| `server`, `model` | `local` (default: the built-in zshai-mini), or an OpenAI-compatible base URL and model id |
 | `apiKey` | Only if your server needs one |
 | `language` | `en` or `no` (also `zshai: language english|norsk`) |
 | `theme` | `auto`, `gold`, `light`, `classic`, `solarized`, `nord`, `dracula`, `mono` (also `zshai: theme`) |
@@ -108,12 +133,32 @@ The important ones are the model server and the model:
 | `protectedSubscriptions` | Azure subscriptions where every change counts as dangerous |
 | `log` | `false` turns the SQLite log off |
 
+### The system prompt
+`zshai: prompt` (or `zshai: system prompt`) opens the system prompt in your `$EDITOR`. It is the file
+`~/.config/zshai/prompt.txt`, created from this default the first time:
+```
+{zshai}
+
+About this machine and user:
+- OS: {os} on {arch} ({flavour}); shell: {shell}; packages: {packages}.
+- Write questions and explanations in {language}.
+- User: {user} on {host}; home folder {home}.
+```
+- `{zshai}` is zshai's built-in rules and answer format. Keep it, and add your own lines below,
+  such as "prefer rg over grep" or "my projects are in ~/git". Without `{zshai}` the file replaces
+  the whole prompt, and then it must still ask for zshai's answer format.
+- The other placeholders are filled in for this machine: `{os} {arch} {flavour} {shell} {packages}
+  {language} {user} {host} {home}`. Lines starting with `#` are comments.
+- `zshai: prompt show` prints the prompt exactly as the model gets it, with warnings for unknown
+  placeholders. `zshai: prompt reset` restores the default.
+- The prompt stays the same between requests, so the model server can reuse its cache.
+
 ## Use
 At the prompt:
 - `zshai: <what you want>` or `zai: …` (or `?text`) sends a request. Every other line is a normal shell command.
 - `zshai: auto on` also sends plain-language lines without the prefix; `zshai: auto off` turns that off.
 - zshai's own commands: `zshai: help`, `zshai: undo`, `zshai: status`, `zshai: stats`, `zshai: last 5`,
-  `zshai: language english|norsk`, `zshai: theme`, `zshai: config`, `zshai: remember …`
+  `zshai: language english|norsk`, `zshai: theme`, `zshai: config`, `zshai: prompt`, `zshai: remember …`
   (Norwegian forms work too: `hjelp`, `angre`, `siste 5`, `språk`, `tema`, `husk`).
 - Colours: `zshai: theme` shows every theme and picks one with a key. `auto` asks the terminal for its
   background colour; `ZSHAI_BG=dark|light` in `~/.zshrc` skips that check. Only zshai's own lines change,
@@ -123,6 +168,7 @@ The helper also works on its own:
 ```zsh
 zshai check -- 'rm -r build'    # risk, validation and dry run for a command
 zshai log 10                    # the latest requests; zshai log --id <id> for one in full
+zshai model [start|stop]        # the built-in model's server
 zshai --version
 ```
 
@@ -162,6 +208,46 @@ Its output is personal and is ignored by git.
 | `tests/practice/` | Live practice set: sample files and requests |
 
 [PLAN.md](PLAN.md) has the full design, decisions and status.
+
+## Training zshai-mini
+zshai-mini is distilled from a bigger model (the teacher, here `qwen3-coder-30b` in LM Studio)
+through zshai itself, so it learns zshai's context, rules and answer format:
+
+1. **Fixture homes** (`datagen/fixtures.py`): fake `$HOME`s with documents, pictures, downloads,
+   git projects, CSV/JSON/JSON Lines/TSV/YAML files and logs. Names, counts and dates vary per seed.
+2. **Requests** (`datagen/gen_requests.py`): the teacher writes what a user would type, for 29
+   categories (files, sizes, CSV/JSON, logs, git, processes, network, packages, media, "how do I",
+   "explain", vague requests, risky requests …) in English and Norwegian.
+3. **Answers** (`datagen/run_teacher.py`): each request goes through `zshai ask` with the teacher,
+   with all of zshai's checks and repair rounds, in a fixture home on **macOS and on Linux** (BSD and
+   GNU tools), sometimes with the optional tools hidden from `PATH` (so it learns `n: <tool>`).
+   Answers are executed (read commands in the fixture, changes in a throwaway copy) and dropped if they
+   fail. Vague requests are judged by the teacher and become clarifying questions.
+4. **Dataset** (`datagen/build_dataset.py`): the first prompt zshai sent and the final, checked
+   answer, with the default system prompt (`zshai: prompt`) rendered for that machine.
+5. **Training** (`train/run-mac.sh`, on an Apple Silicon Mac with mlx-lm): LoRA on all layers of
+   Qwen2.5-Coder-0.5B-Instruct (`train/lora.yaml`), fused, converted to GGUF with llama.cpp and
+   quantized to Q4_K_M.
+6. **Evaluation** (`datagen/bench.jsonl`, `datagen/compare.py`): 48 hand-written requests in two
+   fixture homes never used for training, run through zshai with the student and the teacher.
+   *valid* = passed zshai's checks and ran; *match* = did what the teacher did (same output, same
+   files afterwards, or same kind of answer).
+
+Results (Linux CPU numbers on an 8-core Skylake; Mac on an M5 Pro with Metal):
+
+| Model | Size | Data | Bench (48): valid / match | Held-out (181): valid / match / first try | Time per request |
+|---|---|---|---|---|---|
+| teacher `qwen3-coder-30b` | ~17 GB | — | 0.98 kept | 0.85 kept | ~2–5 s (on the Mac, over the network) |
+| untuned Qwen2.5-Coder-0.5B | 398 MB | — | not run: failed the answer format on both requests tried | — | — |
+| zshai-mini 0.5B v0b | 398 MB | 343 | 0.83 / 0.47 | — | — |
+| zshai-mini 1.5B v1 | 986 MB | 1,523 | 0.89 / 0.64 | — | Linux 3.4 s |
+| zshai-mini 0.5B v1 | 398 MB | 1,523 | 0.94 / 0.68 | 0.91 / 0.63 / 0.89 | Linux 1.3 s |
+| **zshai-mini 0.5B v2** (shipped) | **398 MB** | **2,821** | **0.94 / 0.66** | **0.93 / 0.65 / 0.92** | **Linux 1.5 s, Mac 0.3 s** |
+
+Times are a whole `zshai ask` (context, model, checks) with the model warm; the first request after a
+start adds 1–5 s to load it. The 1.5B was not better on this data, so the 0.5B ships. 4-bit (Q4_K_M)
+scored the same as 8-bit (Q8_0, 531 MB). "match" is strict: many non-matching answers are different
+but correct commands (`grep -r` vs `find -exec grep`).
 
 ## License
 MIT, see [LICENSE](LICENSE).

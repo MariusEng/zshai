@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/MariusEng/zshai/internal/contextinfo"
+	"github.com/MariusEng/zshai/internal/llm"
+	"github.com/MariusEng/zshai/internal/prompt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"github.com/MariusEng/zshai/internal/azcat"
 	"github.com/MariusEng/zshai/internal/config"
 	"github.com/MariusEng/zshai/internal/journal"
+	"github.com/MariusEng/zshai/internal/localmodel"
 	"github.com/MariusEng/zshai/internal/msg"
 	"github.com/MariusEng/zshai/internal/risk"
 	"github.com/MariusEng/zshai/internal/shell"
@@ -204,15 +208,25 @@ func meta(line string) (out string, ok bool) {
 		(word == "glem" || word == "forget") && (rest == "" || rest == "alt" || rest == "all" || restNum == nil),
 		(word == "siste" || word == "last" || word == "logg" || word == "log") && (rest == "" || restNum == nil),
 		word == "auto" && (rest == "" || rest == "på" || rest == "av" || rest == "on" || rest == "off"),
-		word == "theme" || word == "tema":
+		word == "theme" || word == "tema",
+		word == "prompt" || word == "systemprompt" || word == "system-prompt" || word == "ledetekst" ||
+			(word == "system" && (rest == "prompt" || strings.HasPrefix(rest, "prompt "))):
 	default:
 		return "", false
 	}
 	return metaRun(L, cfg, word, rest), true
 }
 
+// editMarker starts meta output that means "open this file in the editor" (exit 4).
+const editMarker = "\x00edit\x00"
+
 func metaRun(L msg.L, cfg config.Config, word, rest string) string {
+	if word == "system" {
+		word, rest = "prompt", strings.TrimSpace(strings.TrimPrefix(rest, "prompt"))
+	}
 	switch word {
+	case "prompt", "systemprompt", "system-prompt", "ledetekst":
+		return promptMeta(L, cfg, rest)
 	case "", "hjelp", "help":
 		return t(L, `zshai: skriv «zshai:» og så hva du vil gjøre, på norsk eller engelsk. Andre linjer er vanlige kommandoer.
   zshai: hvor stor er denne mappa?       gjør det (spør først hvis noe endres)
@@ -223,6 +237,7 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
   zshai: siste [n]        de siste forespørslene
   zshai: status           modell, språk, pakkesystem, az
   zshai: config           vis innstillingsfila
+  zshai: prompt           rediger systemprompten (prompt vis · prompt tilbakestill)
   zshai: språk engelsk    bytt språk (engelsk / norsk)
   zshai: husk <tekst>     notat som sendes med (f.eks. «prosjektene ligger i ~/git»)
   zshai: glem <n|alt>     fjern notater
@@ -237,6 +252,7 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
   zshai: last [n]         the latest requests
   zshai: status           model, language, package manager, az
   zshai: config           show the settings file
+  zshai: prompt           edit the system prompt (prompt show · prompt reset)
   zshai: lang norwegian   switch language (english / norwegian)
   zshai: remember <text>  a note sent with requests ("my projects are in ~/git")
   zshai: forget <n|all>   remove notes
@@ -536,7 +552,11 @@ func statusText(L msg.L, cfg config.Config) string {
 	}
 	b.WriteString(pluginMismatch(L))
 	host, _ := os.Hostname()
-	fmt.Fprintf(&b, "  host: %s\n  model: %s @ %s\n  language: %s  theme: %s  auto: %s\n", host, cfg.Model, cfg.Server, cfg.Language, cfg.Theme, onOff(L, cfg.AutoDetect))
+	if localmodel.IsLocal(cfg.Server) {
+		fmt.Fprintf(&b, "  host: %s\n  %s\n  language: %s  theme: %s  auto: %s\n", host, localmodel.Status(), cfg.Language, cfg.Theme, onOff(L, cfg.AutoDetect))
+	} else {
+		fmt.Fprintf(&b, "  host: %s\n  model: %s @ %s\n  language: %s  theme: %s  auto: %s\n", host, cfg.Model, cfg.Server, cfg.Language, cfg.Theme, onOff(L, cfg.AutoDetect))
+	}
 	if c, err := azcat.Get(); err == nil {
 		fmt.Fprintf(&b, "  az catalog: az %s, %d commands (%s)\n", c.Version, len(c.Commands), c.Source)
 	}
@@ -560,4 +580,42 @@ func statsText(L msg.L) string {
 		fmt.Fprintf(&b, t(L, "  mest brukt: %s\n", "  most used: %s\n"), strings.Join(st.TopTools, ", "))
 	}
 	return b.String()
+}
+
+// promptMeta: zshai: prompt [show|vis|reset|tilbakestill]; plain "zshai: prompt" edits it.
+func promptMeta(L msg.L, cfg config.Config, rest string) string {
+	switch strings.ToLower(rest) {
+	case "", "edit", "rediger", "endre":
+		p, err := prompt.Ensure()
+		if err != nil {
+			return err.Error() + "\n"
+		}
+		return editMarker + p
+	case "show", "vis":
+		tmpl, custom := prompt.Template()
+		ci := contextinfo.Build(contextinfo.Input{Language: cfg.Language})
+		model := cfg.Model
+		if localmodel.IsLocal(cfg.Server) {
+			model = localmodel.Model
+		}
+		var b strings.Builder
+		if custom {
+			fmt.Fprintf(&b, t(L, "# fra %s\n", "# from %s\n"), prompt.Path())
+		} else {
+			b.WriteString(t(L, "# standard (zshai: prompt lager en fil du kan endre)\n", "# default (zshai: prompt creates a file you can edit)\n"))
+		}
+		for _, p := range prompt.Problems(tmpl) {
+			fmt.Fprintf(&b, "# %s: %s\n", t(L, "advarsel", "warning"), p)
+		}
+		b.WriteString(prompt.Render(tmpl, llm.SystemFor(model), prompt.MachineValues(ci.OSName, ci.Flavour, ci.Manager, cfg.Language)) + "\n")
+		return b.String()
+	case "reset", "tilbakestill", "standard", "default":
+		p, err := prompt.Reset()
+		if err != nil {
+			return err.Error() + "\n"
+		}
+		return fmt.Sprintf(t(L, "  Systemprompten er satt tilbake til standard (%s).\n", "  The system prompt is back to the default (%s).\n"), p)
+	}
+	return t(L, "  zshai: prompt (rediger) · zshai: prompt vis · zshai: prompt tilbakestill\n",
+		"  zshai: prompt (edit) · zshai: prompt show · zshai: prompt reset\n")
 }

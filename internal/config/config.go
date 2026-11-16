@@ -70,7 +70,7 @@ func Path() string { return filepath.Join(Dir(), "config.json") }
 func Defaults() Config {
 	return Config{
 		Language:       defaultLanguage(),
-		Server:         "http://localhost:1234/v1", // LM Studio's default; any OpenAI-compatible server works
+		Server:         "local", // the built-in zshai-mini (localmodel); or any OpenAI-compatible URL
 		Model:          "qwen/qwen3-coder-30b",
 		TimeoutSeconds: 30,
 		Tools:          "installed",

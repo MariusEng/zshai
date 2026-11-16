@@ -1,6 +1,27 @@
 # zshai — plan
 
-## Status (updated 2026-11-14)
+## Status (updated 2026-11-15)
+**zshai-mini v2 shipped as the default model (2026-11-15).** Phases 0/2/3 in a first, small form:
+- **Data:** `datagen/` (fixture homes, teacher-written requests in 29 categories × en/no, answers through
+  `zshai ask` with the teacher on macOS *and* Linux, executed in the fixture or a copy, vague requests
+  judged into clarifying questions). 1,668 requests → 2,821 kept examples (both OSes).
+- **Model:** Qwen2.5-Coder-0.5B-Instruct, LoRA on all layers (lr 3e-5; 1e-4 diverged), 1,000 steps, fused,
+  GGUF Q4_K_M (398 MB). Bench (48 hand-written, unseen homes): valid 0.94, match 0.66; held-out (181):
+  valid 0.93, match 0.65, first try 0.92. The 1.5B was not better (0.89/0.64) at 2.5× the size.
+  Q8_0 = Q4_K_M. Full numbers in README "Training zshai-mini".
+- **Runtime:** bundled llama.cpp `llama-server` (b12287; Linux built in an Ubuntu 22.04 container →
+  glibc 2.34, AVX2; macOS Metal, shaders embedded), started by `zshai` on 127.0.0.1:8093 on first use
+  (`internal/localmodel`, `zshai model`). Warm request: Mac M5 Pro 0.3 s, Linux Skylake CPU 1.5 s.
+  `"server": "local"` is the default. `make llama`, `make install-model`, `make bundle` (→ ~380 MB tarball
+  with `install.sh`).
+- **System prompt:** `~/.config/zshai/prompt.txt` (`zshai: prompt` edits, `prompt show`, `prompt reset`);
+  `{zshai}` + machine placeholders. zshai-mini gets `llm.SystemMini` as `{zshai}`; training uses the
+  same rendered default.
+- Vague requests: v2 asks on 7 of 8 held-out ones (teacher: 7 of 8), after weighting asks ×4.
+- **Next:** more data for the weak spots (JSON tables, git diff/log choice, tool choice),
+  real-usage examples from the log, held-out on macOS, Linux arm64 build,
+  hosting the model files (GitHub release).
+
 **Phase 1 (MVP) started 2026-11-14.** zshai is psai's sibling for zsh. Wherever this plan says "as in psai", it means `~/git/powerai/PLAN.md` and the code in `~/git/powerai`.
 
 **Built so far (Go 1.27.4 in `.tools/go`, mvdan.cc/sh v3.14.1 with its zsh dialect):**

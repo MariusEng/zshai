@@ -6,6 +6,7 @@ package contextinfo
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,7 +73,7 @@ func Build(in Input) *Info {
 		inf.Cwd, _ = os.Getwd()
 	}
 	inf.OSName, inf.Flavour = osName()
-	inf.Zsh = os.Getenv("ZSH_VERSION")
+	inf.Zsh = cmp.Or(os.Getenv("ZSHAI_ZSH_VERSION"), os.Getenv("ZSH_VERSION"))
 	inf.Manager = tools.Manager("auto")
 	inf.Have = tools.Installed()
 	sort.Strings(inf.Have)

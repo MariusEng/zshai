@@ -16,6 +16,7 @@ zmodload zsh/parameter zsh/datetime zsh/zselect 2>/dev/null
 autoload -Uz add-zle-hook-widget add-zsh-hook
 
 typeset -g ZSHAI_PLUGIN_VERSION=dev   # set by make dist / make install
+typeset -gx ZSHAI_ZSH_VERSION=$ZSH_VERSION   # for the helper: {shell} in the system prompt, zsh: in the context
 typeset -g ZSHAI_BIN=${ZSHAI_BIN:-${commands[zshai]:-$HOME/.local/bin/zshai}}
 typeset -g _zshai_cache=${ZSHAI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/zshai}
 typeset -gA zshai_r
@@ -360,6 +361,14 @@ zshai-accept-line() {
       local mout mst
       mout=$(ZSHAI_PLUGIN_VERSION=$ZSHAI_PLUGIN_VERSION "$ZSHAI_BIN" meta -- "${line##[[:space:]]#}" 2>&1)
       mst=$?
+      if (( mst == 4 )); then
+        # edit a file zshai named (zshai: prompt): the editor runs as a normal command line
+        local ed=${VISUAL:-${EDITOR:-${commands[nano]:+nano}}}
+        print -s -- "$line"
+        BUFFER="${ed:-vi} ${(q)mout}"
+        zle $_zshai_accept
+        return
+      fi
       if (( mst != 3 )); then
         print -s -- "$line"
         BUFFER=''

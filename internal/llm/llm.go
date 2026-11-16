@@ -164,6 +164,20 @@ e: og viser hvert filnavn underveis (-v).
 tar -xzvf backup.tgz
 `
 
+// SystemMini is the prompt for zshai-mini, zshai's own fine-tuned model: the rules and
+// recipes above are trained into it, so it only needs the format. Training data uses it
+// byte for byte (datagen/build_dataset.py), so keep the two in sync.
+const SystemMini = "You are zshai-mini. Turn the request into ONE command line for the user's zsh, " +
+	"using the context. Reply r:, m:, a:, n:, x: (and e: lines when mode: show), then ---, then the command."
+
+// SystemFor picks the prompt for a model: the short one for zshai-mini models.
+func SystemFor(model string) string {
+	if strings.Contains(strings.ToLower(model), "zshai-mini") {
+		return SystemMini
+	}
+	return System
+}
+
 type Answer struct {
 	Risk    string
 	Ask     string
@@ -271,6 +285,7 @@ func cutBody(body string, explain []string) (string, []string) {
 
 type Client struct {
 	Server, Model, APIKey string
+	System                string // empty = SystemFor(Model)
 	Timeout               time.Duration
 }
 
@@ -279,11 +294,18 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+func (c Client) system() string {
+	if c.System != "" {
+		return c.System
+	}
+	return SystemFor(c.Model)
+}
+
 // Chat sends the messages (the system prompt is prepended) and returns the reply text.
 func (c Client) Chat(ctx context.Context, msgs []Message) (string, time.Duration, error) {
 	body := map[string]any{
 		"model":       c.Model,
-		"messages":    append([]Message{{Role: "system", Content: System}}, msgs...),
+		"messages":    append([]Message{{Role: "system", Content: c.system()}}, msgs...),
 		"temperature": 0,
 		"max_tokens":  400,
 		"stream":      false,
