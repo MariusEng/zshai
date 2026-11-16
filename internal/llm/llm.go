@@ -69,13 +69,14 @@ Rules:
   Linux: awk '{print int($1/3600)}' /proc/uptime. Plain uptime when no unit is asked for.
 - Files: use the format and keys shown in "named:" (JSON array vs JSON Lines, CSV delimiter);
   never guess a key that isn't listed. Paths in the cwd: write them relative (app.log), not ~/….
-- Tables: let column align them. CSV: column -s, -t < f.csv (delimiter ; → -s';'; TSV: -s $'\t').
-  JSON array to a table with a header (tostring keeps array/object fields in one cell):
-  jq -r '(.[0] | keys_unsorted) as $k | ($k | @tsv), (.[] | [.[$k[]] | tostring] | @tsv)' f.json | column -t -s $'\t'
-  JSON Lines: the same filter with jq -s -r. @tsv/@csv always need -r.
-  Sorted / top N: sort and cut inside jq before the table: jq -s -r 'sort_by(-.mem) | .[:3] | (.[0] | keys_unsorted) as $k | …'
-  (-.x = largest first). Filtered: map(select(.user == "root")) | … the same way. Never pipe a table into sort. Sorting data with a header: keep the header first:
-  (head -n 1 f.csv; tail -n +2 f.csv | sort -t, -k4 -nr) | column -s, -t
+- Tables and lists of records (JSON array, JSON Lines, CSV, TSV): zshai fmt prints them the way
+  PowerShell does. zshai fmt -t f.json = table (Format-Table: aligned columns, dashed header);
+  zshai fmt -l f.json = list (Format-List: "name : value" per record); zshai fmt f.json = PowerShell's
+  choice (table for up to 4 keys, list for more). Works on CSV/TSV files and JSON Lines as they are.
+  Options: -p name,size (only these columns), --sort key (--sort -key = largest first), -n 5 (first 5).
+  Filter or reshape with jq first and pipe JSON (jq without -r) into it:
+  jq 'map(select(.user == "root"))' ps.json | zshai fmt -t. Never pipe zshai fmt's table into sort.
+  @tsv/@csv always need -r.
 - JSON: sort, filter and pick inside jq (sort_by(.age), select(.cpu > 10), map({name, email})), not
   with sort/grep on jq's output. Pretty output (no -c) unless the user asks for compact.
 - Fields in a log line: count them in the first line shown in "named:" (date=$1 time=$2 level=$3 …).
@@ -131,7 +132,7 @@ a:
 n:
 x: 0
 ---
-(head -n 1 salg.csv; tail -n +2 salg.csv | sort -t, -k3 -nr) | column -s, -t
+zshai fmt -t --sort -beløp salg.csv
 
 request: show orders.json sorted by total as a table   (named: orders.json — JSON array of 20 objects; keys: id (number), customer (string), total (number))
 r: read
@@ -140,7 +141,16 @@ a:
 n:
 x: 0
 ---
-jq -r 'sort_by(-.total) | (.[0] | keys_unsorted) as $k | ($k | @tsv), (.[] | [.[$k[]] | tostring] | @tsv)' orders.json | column -t -s $'\t'
+zshai fmt -t --sort -total orders.json
+
+request: show customer and total for orders over 100   (named: orders.json — JSON array of 20 objects; keys: id (number), customer (string), total (number))
+r: read
+m: run
+a:
+n:
+x: 0
+---
+jq 'map(select(.total > 100))' orders.json | zshai fmt -t -p customer,total
 
 request: how do I list only directories?   (mode: show)
 r: read

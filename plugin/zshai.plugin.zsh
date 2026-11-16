@@ -18,6 +18,9 @@ autoload -Uz add-zle-hook-widget add-zsh-hook
 typeset -g ZSHAI_PLUGIN_VERSION=dev   # set by make dist / make install
 typeset -gx ZSHAI_ZSH_VERSION=$ZSH_VERSION   # for the helper: {shell} in the system prompt, zsh: in the context
 typeset -g ZSHAI_BIN=${ZSHAI_BIN:-${commands[zshai]:-$HOME/.local/bin/zshai}}
+# commands zshai writes may use  zshai fmt  (PowerShell-style tables and lists): make
+# sure the name works even when the helper isn't on PATH
+(( ${+commands[zshai]} )) || zshai() { "$ZSHAI_BIN" "$@" }
 typeset -g _zshai_cache=${ZSHAI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/zshai}
 typeset -gA zshai_r
 typeset -g _zshai_turn_id='' _zshai_ran='' _zshai_pending='' _zshai_resume=''
@@ -250,8 +253,10 @@ _zshai_handle() {
   # the folder was replaced (deleted and created again, e.g. re-copied): step into the new one
   [[ -d $PWD && ! . -ef $PWD ]] && builtin cd -q -- "$PWD"
   print -rn -- $'\e['"$ZSHAI_COLORS[note]"'m  …'$'\e[0m'
-  out=$("$ZSHAI_BIN" "$@" 2>&1)
-  print -n -- $'\r\e[2K'
+  # the helper draws a spinner with a waving label on /dev/tty while it waits for the
+  # model ("thinking", "retrying", "thinking harder"); ZSHAI_SPINNER is its colour
+  out=$(ZSHAI_SPINNER=${ZSHAI_COLORS[note]-90} "$ZSHAI_BIN" "$@" 2>&1)
+  print -n -- $'\r\e[2K\e[?25h'
   _zshai_eval "$out"
   _zshai_turn_id=${zshai_r[id]-}
   [[ -n ${zshai_r[failed]-} ]] && _zshai_say $ZSHAI_COLORS[ask] "${zshai_r[failed]}"

@@ -83,6 +83,8 @@ func Check(s *shell.Script, env Env) Result {
 		r.Problems = append(r.Problems, jqCheck(c, env.Cwd)...)
 		r.Problems = append(r.Problems, quotedTilde(c)...)
 		switch c.Name {
+		case "zshai":
+			r.Problems = append(r.Problems, fmtCheck(c, env.Cwd)...)
 		case "git":
 			if p := gitSub(c); p != "" {
 				r.Problems = append(r.Problems, p)
@@ -135,7 +137,7 @@ func zshSyntax(src string) error {
 }
 
 func exists(c *shell.Cmd, env Env) bool {
-	if builtins[c.Name] || env.Functions[c.Name] {
+	if builtins[c.Name] || env.Functions[c.Name] || c.Name == "zshai" && c.Path == "" {
 		return true
 	}
 	if _, ok := env.Aliases[c.Name]; ok && c.Path == "" {

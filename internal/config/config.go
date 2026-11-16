@@ -27,6 +27,9 @@ type Config struct {
 	AutoDetect bool `json:"autoDetect"`
 	// Theme: zshai's colours (internal/theme); "auto" = gold on dark, light on light.
 	Theme string `json:"theme"`
+	// Tables: "powershell" (default) prints tables and lists with zshai fmt, the way
+	// PowerShell's Format-Table / Format-List do; "column" keeps column -t tables.
+	Tables string `json:"tables"`
 }
 
 func Dir() string {
@@ -79,6 +82,7 @@ func Defaults() Config {
 		FixAttempts:    1,
 		Log:            true,
 		Theme:          "auto",
+		Tables:         "powershell",
 	}
 }
 

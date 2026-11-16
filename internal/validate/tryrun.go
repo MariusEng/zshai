@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ var readOnly = map[string]bool{
 	"jq": true, "column": true, "sort": true, "head": true, "tail": true, "cut": true, "tr": true,
 	"uniq": true, "wc": true, "grep": true, "egrep": true, "cat": true, "nl": true, "paste": true,
 	"rev": true, "fold": true, "fmt": true, "expand": true, "unexpand": true, "comm": true, "join": true,
+	"zshai": true, // only "zshai fmt", see readOnlyCmd
 }
 
 func readOnlyCmd(c *shell.Cmd) bool {
@@ -27,6 +30,9 @@ func readOnlyCmd(c *shell.Cmd) bool {
 		if r.Op != "<" { // only reading a file
 			return false
 		}
+	}
+	if c.Name == "zshai" && (len(c.Args) == 0 || c.Args[0] != "fmt") {
+		return false
 	}
 	for i, a := range c.Args {
 		if !c.Lit[i] {
@@ -69,6 +75,7 @@ func TryRun(s *shell.Script, cwd string) []string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, zsh, "-f", "-o", "pipefail", "-c", s.Src)
 	cmd.Dir = cwd
+	cmd.Env = selfOnPath()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
@@ -99,6 +106,23 @@ func TryRun(s *shell.Script, cwd string) []string {
 		}
 	}
 	return []string{"running it on the real files failed: " + strings.Join(lines, " | ")}
+}
+
+// selfOnPath: the environment with this zshai binary's folder first on PATH, so
+// "zshai fmt" in a pipeline runs this build (the helper may not be on PATH).
+func selfOnPath() []string {
+	env := os.Environ()
+	exe, err := os.Executable()
+	if err != nil || filepath.Base(exe) != "zshai" {
+		return env
+	}
+	for i, e := range env {
+		if p, ok := strings.CutPrefix(e, "PATH="); ok {
+			env[i] = "PATH=" + filepath.Dir(exe) + string(os.PathListSeparator) + p
+			return env
+		}
+	}
+	return append(env, "PATH="+filepath.Dir(exe))
 }
 
 // jqRowsCheck runs the jq part in front of column on its own: if it prints JSON ("[", "{")

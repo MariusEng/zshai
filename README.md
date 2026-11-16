@@ -133,6 +133,7 @@ or, with your own model server:
 | `packageManager` | `auto`, `apt`, `pacman`, `brew`, `dnf` |
 | `suggestInstall` | `ask`, `mention` or `never` |
 | `fixAttempts` | How many corrected commands to offer after a failure |
+| `tables` | `powershell` (default): tables and lists of records print PowerShell-style with `zshai fmt`; `column`: keep `column -t` tables |
 | `protectedSubscriptions` | Azure subscriptions where every change counts as dangerous |
 | `log` | `false` turns the SQLite log off |
 
@@ -163,6 +164,11 @@ At the prompt:
 - zshai's own commands: `zshai: help`, `zshai: undo`, `zshai: status`, `zshai: stats`, `zshai: last 5`,
   `zshai: language english|norsk`, `zshai: theme`, `zshai: config`, `zshai: prompt`, `zshai: remember …`
   (Norwegian forms work too: `hjelp`, `angre`, `siste 5`, `språk`, `tema`, `husk`).
+- While the model works, a spinner shows what zshai is doing: `thinking`, `retrying` (an answer failed
+  zshai's checks), `thinking harder` (the second retry), `fixing it` (after a failed command) or
+  `starting the model`. One letter at a time is drawn large, so the word waves.
+- Tables and lists of JSON, JSON Lines or CSV look like PowerShell's `Format-Table` / `Format-List`
+  ("show orders.json as a table", "list the users in users.json"); see `zshai fmt` below.
 - Colours: `zshai: theme` shows every theme and picks one with a key. `auto` asks the terminal for its
   background colour; `ZSHAI_BG=dark|light` in `~/.zshrc` skips that check. Only zshai's own lines change,
   never your prompt.
@@ -172,8 +178,29 @@ The helper also works on its own:
 zshai check -- 'rm -r build'    # risk, validation and dry run for a command
 zshai log 10                    # the latest requests; zshai log --id <id> for one in full
 zshai model [start|stop]        # the built-in model's server
+zshai fmt -t orders.json        # JSON / JSON Lines / CSV as a PowerShell-style table (-l: list)
 zshai --version
 ```
+
+### PowerShell-style tables: `zshai fmt`
+`zshai fmt` prints records the way PowerShell prints objects after `ConvertFrom-Json` or `Import-Csv`.
+With no option it picks like PowerShell does: a table for up to 4 properties, a list for more.
+```
+$ zshai fmt -t --sort -total orders.json          $ zshai fmt -l users.json
+
+id customer     total                             name  : Kari
+-- --------     -----                             email : kari@example.com
+ 1 Kari         250.5                             tags  : {admin, dev, ops, web…}
+12 Ola Nordmann     9                             addr  : @{city=Oslo; zip=0150}
+```
+- `-t` table, `-l` list; `-p name,total` only these columns (Select-Object); `--sort key` / `--sort -key`
+  (largest first); `-n 5` the first 5; `--csv` / `-d ';'` for CSV on stdin (`.csv`/`.tsv` files are read as CSV).
+- Number columns are right-aligned, nested objects print as `@{k=v; …}` and arrays as `{a, b, c, d…}`
+  (the first 4, like `$FormatEnumerationLimit`). A table wider than the terminal shrinks its widest
+  columns and ends cut cells with `…`.
+- It reads files or stdin, so it works after jq: `jq 'map(select(.total > 100))' orders.json | zshai fmt -t`.
+- The model is told to use it. zshai-mini was trained on `jq … | column -t` tables, so zshai rewrites
+  those recipes to `zshai fmt -t` (turn off with `"tables": "column"`).
 
 ## Privacy
 - Requests go only to the model server in your config.

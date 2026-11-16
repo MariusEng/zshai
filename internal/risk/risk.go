@@ -174,6 +174,13 @@ func classifyCmd(r *Result, c *shell.Cmd, env Env) {
 		return
 	}
 	switch n {
+	case "zshai":
+		// zshai fmt only formats what it reads (PowerShell-style tables); the rest of
+		// zshai's own commands are not for the model to run
+		if len(args) > 0 && (args[0] == "fmt" || args[0] == "format") {
+			return
+		}
+		r.add(Change, "", c, "runs zshai %s", strings.Join(args, " "))
 	// ---- delete / move
 	case "rm", "unlink", "rmdir", "trash", "srm":
 		for _, o := range ops {

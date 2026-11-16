@@ -277,8 +277,6 @@ func (l L) Keys(lvl risk.Level) string {
 	return l.t("ja / nei / vis / endre", "yes / no / show / edit")
 }
 
-func (l L) Thinking() string { return l.t("tenker …", "thinking …") }
-
 func (l L) Run() string { return l.t("Kjøre?", "Run?") }
 
 func (l L) RunFixed() string {
@@ -342,3 +340,10 @@ func (l L) Gave(problems []string) string {
 func (l L) Remote(hosts []string) string {
 	return l.t("kjører på ", "runs on ") + strings.Join(hosts, ", ")
 }
+
+// Spinner labels (internal/spinner): what zshai is waiting for.
+func (l L) Thinking() string       { return l.t("tenker", "thinking") }
+func (l L) Retrying() string       { return l.t("prøver igjen", "retrying") }
+func (l L) ThinkingHarder() string { return l.t("tenker hardere", "thinking harder") }
+func (l L) Fixing() string         { return l.t("retter feilen", "fixing it") }
+func (l L) StartingModel() string  { return l.t("starter modellen", "starting the model") }

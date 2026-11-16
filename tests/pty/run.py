@@ -33,6 +33,9 @@ COLS, ROWS = 120, 40
 CANNED = {
     # an answer to a clarifying question arrives with the earlier request attached
     "earlier request: \"rydd opp\"": "r: read\na:\nn:\nx: 0\n---\nls -la logs",
+    "tenk lenge": "r: read\nm: run\na:\nn:\nx: 0\n---\nprint ferdig",
+    "ordrene som tabell": "r: read\nm: run\na:\nn:\nx: 0\n---\njq -r '(.[0] | keys_unsorted) as $k | ($k | @tsv), "
+                          "(.[] | [.[$k[]] | tostring] | @tsv)' orders.json | column -t -s $'\\t'",
     "hvor mange rader": "r: read\na:\nn:\nx: 0\n---\ntail -n +2 sales.csv | wc -l",
     "slett loggfilene": "r: delete\na:\nn:\nx: 0\n---\nfind ./logs -name '*.log' -mtime +7 -delete",
     "slett alle loggfilene": "r: delete\na:\nn:\nx: 0\n---\nrm logs/*.log",
@@ -73,6 +76,13 @@ class FakeModel(http.server.BaseHTTPRequestHandler):
         req = [l for l in user.splitlines() if l.startswith("request: ")][0][len("request: "):]
         table = FIX_CANNED if "failed command:" in user else CANNED
         reply = next((v for k, v in table.items() if k in req), "r: read\na: ?\nn:\nx: 0\n---\n")
+        # slow answers, so the spinner shows: the first try fails zshai's checks, the retry works
+        if "tenk lenge" in req:
+            time.sleep(1.2)
+        if "prøv igjen" in req:
+            time.sleep(1.0)
+            tries = sum(1 for m in body["messages"] if m["role"] == "user")
+            reply = "r: read\nm: run\na:\nn:\nx: 0\n---\n" + ("nosuchcmd_xyz" if tries == 1 else "print ferdig")
         out = json.dumps({"choices": [{"message": {"role": "assistant", "content": reply}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -93,6 +103,8 @@ def fixtures(work):
             f.write(os.urandom(i * 40000))
         t = time.time() - days * 86400
         os.utime(p, (t, t))
+    with open(f"{work}/orders.json", "w") as f:
+        f.write('[{"id": 1, "customer": "Kari", "total": 250.5}, {"id": 12, "customer": "Ola Nordmann", "total": 9}]\n')
     with open(f"{work}/sales.csv", "w") as f:
         f.write("date,item,amount\n2026-11-01,a,10\n2026-11-02,b,20\n2026-11-03,c,30\n")
     repo = f"{work}/repo"
@@ -365,6 +377,21 @@ SCENARIOS = {
         lambda w, s, a: (["prompt.txt not edited"] if "TEST-PREF" not in open(f"{w}/.cfg/prompt.txt").read() else [])
         + ([] if SYSTEMS and "TEST-PREF" in SYSTEMS[-1] and "About this machine" in SYSTEMS[-1] and "{os}" not in SYSTEMS[-1]
            else ["edited prompt not sent to the model"]) + has(s, "\n3")),
+    # a spinner with a waving label while the model works; gone when the answer comes
+    "spinner-while-thinking": (
+        [("zshai: tenk lenge\r", 0.7), ("", 1.5)], None,
+        lambda w, s, a: ([] if "tenker…" in ROWS_SEEN[0].lower()  # the wave itself: spinner_test.go
+                         else [f"no waving spinner while waiting: {ROWS_SEEN[0]!r}"])
+        + has(s, "ferdig") + (["spinner left on screen"] if "tenker…" in s.lower() else [])),
+    "spinner-says-retrying": (
+        [("zshai: prøv igjen\r", 1.6), ("", 1.5)], None,
+        lambda w, s, a: ([] if "prøver igjen…" in ROWS_SEEN[0].lower() else [f"retry not shown: {ROWS_SEEN[0]!r}"])
+        + has(s, "ferdig")),
+    # the model's jq | column table recipe comes out as a PowerShell-style table
+    "table-powershell-style": (
+        [("zshai: vis ordrene som tabell\r", 2)], None,
+        lambda w, s, a: has(s, "zshai fmt -t orders.json", "id customer     total", "-- --------     -----",
+                            " 1 Kari         250.5", "12 Ola Nordmann     9")),
     "shell-lines-stay-shell": (
         [("ls\r", 0.6), ("69\r", 0.6), ("gst\r", 0.8), (",echo komma\r", 0.6)], {"_cfg": {"autoDetect": True}},
         lambda w, s, a: has(s, "sales.csv", "command not found: 69", "komma")

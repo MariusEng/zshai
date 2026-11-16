@@ -159,7 +159,7 @@ func SortAfterTable(s *shell.Script) []string {
 			continue
 		}
 		switch {
-		case c.Name == "column" && c.PipeFrom != nil, c.Name == "jq" && strings.Contains(strings.Join(c.Args, " "), "@tsv"):
+		case c.Name == "column" && c.PipeFrom != nil, c.Name == "zshai", c.Name == "jq" && strings.Contains(strings.Join(c.Args, " "), "@tsv"):
 			table = true
 		case c.Name == "sort" && table && c.PipeFrom != nil:
 			return []string{"don't sort a finished table (the header gets sorted in, and column's output has no tabs): " +
@@ -207,13 +207,13 @@ func TableAsked(s *shell.Script, request string) []string {
 	}
 	for _, c := range s.Cmds {
 		switch c.Name {
-		case "column", "printf", "csvlook", "mlr", "xsv", "qsv", "visidata", "vd":
+		case "column", "printf", "csvlook", "mlr", "xsv", "qsv", "visidata", "vd", "zshai":
 			return nil
 		}
 	}
 	if strings.Contains(s.Src, "printf") || strings.Contains(s.Src, "@tsv") && strings.Contains(s.Src, "column") {
 		return nil
 	}
-	return []string{"the user asked for a table, but this prints no aligned columns: make rows (jq -r … | @tsv, or the CSV itself) " +
-		"and pipe them into column -t -s $'\\t' (CSV: column -s, -t), with a header row"}
+	return []string{"the user asked for a table, but this prints no aligned columns: use zshai fmt -t FILE " +
+		"(JSON, JSON Lines, CSV), or pipe JSON from jq into zshai fmt -t"}
 }

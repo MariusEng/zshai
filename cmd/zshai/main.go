@@ -37,6 +37,7 @@ import (
 	"github.com/MariusEng/zshai/internal/risk"
 	"github.com/MariusEng/zshai/internal/router"
 	"github.com/MariusEng/zshai/internal/shell"
+	"github.com/MariusEng/zshai/internal/spinner"
 	"github.com/MariusEng/zshai/internal/store"
 	"github.com/MariusEng/zshai/internal/theme"
 	"github.com/MariusEng/zshai/internal/tools"
@@ -109,6 +110,9 @@ func main() {
 		} else {
 			fmt.Println(0)
 		}
+	case "fmt", "format":
+		// PowerShell-style tables and lists for JSON / CSV (Format-Table, Format-List)
+		os.Exit(cmdFmt(os.Args[2:]))
 	case "check":
 		cmdCheck(os.Args[2:])
 	case "model":
@@ -160,6 +164,7 @@ func usage() {
   zshai check -- <command>     risk, validation and dry run for a command
   zshai ask [--cwd D] -- <request>
   zshai route -- <line>        exit 0 = send to AI, 1 = run as shell
+  zshai fmt [-t|-l] [file]     JSON/CSV as a PowerShell-style table or list (zshai fmt -h)
   zshai undo                   reverse the last AI move/delete/git reset
   zshai log [n] [--changed]    the latest requests from the log (~/.local/state/zshai/zshai.db)
   zshai log --id <id>          one request: prompts, model replies, effects
@@ -358,6 +363,12 @@ func cmdAsk(args []string) {
 		emit(map[string]string{"status": "error", "msg": L.CwdGone(*cwd)})
 		return
 	}
+	label := L.Thinking()
+	if failed != nil {
+		label = L.Fixing()
+	}
+	spin := spinner.Start(label)
+	defer spin.Stop()
 	t0 := time.Now()
 	id := newID()
 	turn := journal.Turn{ID: id, Start: t0, Cwd: *cwd, Request: request, Model: cfg.Model, Lang: cfg.Language, Mode: "run"}
@@ -385,6 +396,9 @@ func cmdAsk(args []string) {
 	client := llm.Client{Server: cfg.Server, Model: cfg.Model, APIKey: cfg.APIKey, Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second}
 	if localmodel.IsLocal(cfg.Server) {
 		// the bundled model: start llama-server on first use
+		if !localmodel.Healthy() {
+			spin.Set(L.StartingModel())
+		}
 		if err := localmodel.Ensure(20 * time.Second); err != nil {
 			turn.Outcome, turn.Error = "error", err.Error()
 			emit(map[string]string{"status": "error", "msg": L.Unreachable(err)})
@@ -392,6 +406,7 @@ func cmdAsk(args []string) {
 		}
 		client.Server, client.Model = localmodel.URL(), localmodel.Model
 		turn.Model = localmodel.Model
+		spin.Set(label)
 	}
 	// the system prompt: the user's template (zshai: prompt) around zshai's built-in rules
 	tmpl, _ := prompt.Template()
@@ -420,6 +435,12 @@ func cmdAsk(args []string) {
 		msgs[0].Content += "mode: run\n"
 	}
 	for attempt := 0; attempt < 3; attempt++ {
+		switch attempt {
+		case 1:
+			spin.Set(L.Retrying())
+		case 2:
+			spin.Set(L.ThinkingHarder())
+		}
 		at := time.Now()
 		raw, dur, err := client.Chat(context.Background(), msgs)
 		turn.ModelMs += dur.Milliseconds()
@@ -543,6 +564,14 @@ func cmdAsk(args []string) {
 		return
 	}
 
+	if cfg.Tables != "column" {
+		// PowerShell-style tables: the jq/column table recipes become zshai fmt -t
+		if ps := validate.PSTable(ans.Script, *cwd); ps != "" {
+			if s2, err := shell.Parse(ps, aliases); err == nil {
+				ans.Script, script = ps, s2
+			}
+		}
+	}
 	home, _ := os.UserHomeDir()
 	rk := risk.Classify(script, risk.Env{Home: home, OS: ci.OS, Az: cat, ProtectedSubs: cfg.ProtectedSubscriptions, CurrentSub: sub})
 	level := rk.Level
