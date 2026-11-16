@@ -85,10 +85,13 @@ Copy the binary for that machine to `~/.local/bin/zshai` and the plugin file to
 with llama.cpp's `llama-server`, which it starts on 127.0.0.1:8093 on the first request and leaves
 running (`zshai model stop` ends it). On a Mac it uses the GPU (Metal); on Linux the CPU is enough.
 
-The model weights are too big for git; a release bundle has everything for one platform:
+The model weights are too big for git. Each [release](https://github.com/MariusEng/zshai/releases)
+has a bundle with everything for one platform (macOS Apple Silicon, Linux x86_64 with glibc 2.34+):
 ```zsh
-tar xzf zshai-<version>-darwin-arm64.tar.gz
-zshai-<version>-darwin-arm64/install.sh    # ~/.local/bin/zshai, ~/.local/share/zshai/{llama-server,models/}, the plugin
+v=0.3.0 p=darwin-arm64    # or linux-amd64
+curl -LO https://github.com/MariusEng/zshai/releases/download/v$v/zshai-$v-$p.tar.gz
+tar xzf zshai-$v-$p.tar.gz
+zshai-$v-$p/install.sh    # ~/.local/bin/zshai, ~/.local/share/zshai/{llama-server,models/}, the plugin
 ```
 From source, with a model file in `models/`:
 ```zsh

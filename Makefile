@@ -55,7 +55,8 @@ LLAMA_FLAGS_darwin := -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_NATIV
 llama:
 	test -d .tools/llama.cpp || git clone -q --depth 1 --branch $(LLAMA_TAG) https://github.com/ggml-org/llama.cpp.git .tools/llama.cpp
 	$(CMAKE) -S .tools/llama.cpp -B .tools/llama.cpp/build-$(PLAT) -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-	  -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF $(LLAMA_FLAGS_$(HOST_OS))
+	  -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF $(LLAMA_FLAGS_$(HOST_OS)) \
+	  -DCMAKE_C_FLAGS="-ffile-prefix-map=$(CURDIR)/.tools/llama.cpp=llama.cpp" -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$(CURDIR)/.tools/llama.cpp=llama.cpp"
 	$(CMAKE) --build .tools/llama.cpp/build-$(PLAT) --target llama-server -j
 	install -d build/$(PLAT)
 	install -m 755 .tools/llama.cpp/build-$(PLAT)/bin/llama-server build/$(PLAT)/llama-server
