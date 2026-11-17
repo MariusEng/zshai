@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -53,9 +54,34 @@ type Options struct {
 
 // ---------------------------------------------------------------- reading
 
+// ErrEmpty: the input has nothing in it (an empty file, or only blank lines).
+var ErrEmpty = errors.New("is empty")
+
+// Text returns b as UTF-8 without a byte order mark. UTF-16 with a BOM (Excel's
+// "Unicode text", PowerShell 5's Out-File) is decoded.
+func Text(b []byte) []byte {
+	if len(b) >= 2 && (b[0] == 0xff && b[1] == 0xfe || b[0] == 0xfe && b[1] == 0xff) {
+		be := b[0] == 0xfe
+		u := make([]uint16, 0, len(b)/2)
+		for i := 2; i+1 < len(b); i += 2 {
+			if be {
+				u = append(u, uint16(b[i])<<8|uint16(b[i+1]))
+			} else {
+				u = append(u, uint16(b[i+1])<<8|uint16(b[i]))
+			}
+		}
+		return []byte(string(utf16.Decode(u)))
+	}
+	return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
+}
+
 // ParseJSON reads one JSON value, or several (JSON Lines / concatenated JSON), which then
 // become an array. Objects keep their key order; numbers stay as written (json.Number).
 func ParseJSON(b []byte) (any, error) {
+	b = Text(b)
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, ErrEmpty
+	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
 	var vals []any
@@ -71,7 +97,7 @@ func ParseJSON(b []byte) (any, error) {
 	}
 	switch len(vals) {
 	case 0:
-		return nil, errors.New("no input")
+		return nil, ErrEmpty
 	case 1:
 		return vals[0], nil
 	}
@@ -127,7 +153,14 @@ func readValue(dec *json.Decoder) (any, error) {
 // header line (tab, ; or ,). Values that look like numbers become numbers, so they are
 // right-aligned and sort as numbers.
 func ParseCSV(b []byte, delim rune) ([]any, error) {
-	b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
+	b = Text(b)
+	// old Mac line endings (\r alone) are one long line to encoding/csv
+	if bytes.IndexByte(b, '\r') >= 0 {
+		b = bytes.ReplaceAll(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")), []byte("\r"), []byte("\n"))
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, ErrEmpty
+	}
 	if delim == 0 {
 		first, _, _ := bytes.Cut(b, []byte("\n"))
 		delim = ','
@@ -147,7 +180,7 @@ func ParseCSV(b []byte, delim rune) ([]any, error) {
 		return nil, err
 	}
 	if len(rows) == 0 {
-		return nil, errors.New("no input")
+		return nil, ErrEmpty
 	}
 	head := rows[0]
 	for i, h := range head {

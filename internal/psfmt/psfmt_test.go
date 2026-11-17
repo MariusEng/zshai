@@ -60,3 +60,23 @@ func TestShrinkToWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestCSVOddInput(t *testing.T) {
+	if _, err := ParseCSV([]byte("\n\n"), 0); err != ErrEmpty {
+		t.Errorf("blank lines: %v, want ErrEmpty", err)
+	}
+	// old Mac line endings
+	rows, err := ParseCSV([]byte("pid,cmd\r1,a\r2,b\r"), 0)
+	if err != nil || len(rows) != 2 {
+		t.Errorf("\\r endings: %d rows, %v", len(rows), err)
+	}
+	// UTF-16 LE with BOM (Excel "Unicode text")
+	u16 := []byte{0xff, 0xfe}
+	for _, r := range "pid;cmd\n1;a\n" {
+		u16 = append(u16, byte(r), 0)
+	}
+	rows, err = ParseCSV(u16, 0)
+	if err != nil || len(rows) != 1 || Format(rows, Options{Mode: Table}) != "\npid cmd\n--- ---\n  1 a\n\n" {
+		t.Errorf("utf-16: %q %v", Format(rows, Options{Mode: Table}), err)
+	}
+}

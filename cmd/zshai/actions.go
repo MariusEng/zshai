@@ -21,6 +21,7 @@ import (
 	"github.com/MariusEng/zshai/internal/localmodel"
 	"github.com/MariusEng/zshai/internal/msg"
 	"github.com/MariusEng/zshai/internal/risk"
+	"github.com/MariusEng/zshai/internal/sandbox"
 	"github.com/MariusEng/zshai/internal/shell"
 	"github.com/MariusEng/zshai/internal/store"
 	"github.com/MariusEng/zshai/internal/theme"
@@ -203,12 +204,16 @@ func meta(line string) (out string, ok bool) {
 	case (word == "" || word == "hjelp" || word == "help") && rest == "",
 		(word == "angre" || word == "undo" || word == "status" || word == "stats" || word == "statistikk" || word == "versjon" || word == "version" ||
 			word == "config" || word == "konfig" || word == "innstillinger" || word == "settings") && rest == "",
+		// "config fixAttempts=2", "config typos av", "config fixAttempts": a setting, not a request
+		(word == "config" || word == "konfig" || word == "innstillinger" || word == "settings") && configArg.MatchString(rest),
 		(word == "husk" || word == "remember"),
 		word == "språk" || word == "sprak" || word == "lang" || word == "language" || word == "lng",
 		(word == "glem" || word == "forget") && (rest == "" || rest == "alt" || rest == "all" || restNum == nil),
 		(word == "siste" || word == "last" || word == "logg" || word == "log") && (rest == "" || restNum == nil),
 		word == "auto" && (rest == "" || rest == "på" || rest == "av" || rest == "on" || rest == "off"),
 		word == "theme" || word == "tema",
+		word == "debug" || word == "feilsøk" || word == "feilsok" || word == "feilsøking",
+		(word == "model" || word == "modell") && (rest == "" || len(strings.Fields(rest)) == 1),
 		word == "prompt" || word == "systemprompt" || word == "system-prompt" || word == "ledetekst" ||
 			(word == "system" && (rest == "prompt" || strings.HasPrefix(rest, "prompt "))):
 	default:
@@ -227,6 +232,26 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
 	switch word {
 	case "prompt", "systemprompt", "system-prompt", "ledetekst":
 		return promptMeta(L, cfg, rest)
+	case "debug", "feilsøk", "feilsok", "feilsøking":
+		return debugMeta(L, cfg, rest)
+	case "model", "modell":
+		if rest == "" || rest == "list" || rest == "liste" {
+			return localmodel.List()
+		}
+		name := strings.ToLower(rest)
+		if _, ok := localmodel.Installed()[name]; !ok {
+			if _, known := localmodel.Lookup(name); !known {
+				return t(L, "Ukjent modell. Velg 1.5b eller 3b.\n", "Unknown model. Choose 1.5b or 3b.\n")
+			}
+			return fmt.Sprintf(t(L, "%s er ikke installert. Last den ned med:  zshai model install %s\n",
+				"%s is not installed. Download it with:  zshai model install %s\n"), name, name)
+		}
+		cfg.LocalModel = name
+		if err := config.Save(cfg); err != nil {
+			return err.Error() + "\n"
+		}
+		localmodel.Stop()
+		return t(L, "Bruker ", "Using ") + name + t(L, " fra neste forespørsel.\n", " from the next request.\n")
 	case "", "hjelp", "help":
 		return t(L, `zshai: skriv «zshai:» og så hva du vil gjøre, på norsk eller engelsk. Andre linjer er vanlige kommandoer.
   zshai: hvor stor er denne mappa?       gjør det (spør først hvis noe endres)
@@ -236,13 +261,16 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
   zshai: angre            angre siste flytt/sletting/git-reset
   zshai: siste [n]        de siste forespørslene
   zshai: status           modell, språk, pakkesystem, az
-  zshai: config           vis innstillingsfila
+  zshai: config           vis innstillingsfila (config fixAttempts=2 endrer en, config typos viser en)
+  zshai: modell [3b]      vis modellene, eller bytt til en annen størrelse
+  zshai: debug [n]        lag en feilsøkingsfil av de siste n forespørslene (alt modellen fikk og svarte, testkjøringer)
   zshai: prompt           rediger systemprompten (prompt vis · prompt tilbakestill)
   zshai: språk engelsk    bytt språk (engelsk / norsk)
   zshai: husk <tekst>     notat som sendes med (f.eks. «prosjektene ligger i ~/git»)
   zshai: glem <n|alt>     fjern notater
   zshai: tema [navn]      vis og velg fargetema
   zshai: auto på|av       send også vanlig tekst uten «zshai:» til zshai (nå: `+onOff(L, cfg.AutoDetect)+`)
+  zshai: skrivefeil på|av foreslå riktig kommando ved skrivefeil, som rn → rm (nå: `+onOff(L, cfg.Typos)+`)
 `, `zshai: type "zshai:" and what you want to do, in English or Norwegian. Other lines are normal commands.
   zshai: how big is this folder?         does it (asks first if anything changes)
   zshai: how do I list only folders?     shows the command and explains it, doesn't run it
@@ -251,13 +279,16 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
   zshai: undo             undo the last move/delete/git reset
   zshai: last [n]         the latest requests
   zshai: status           model, language, package manager, az
-  zshai: config           show the settings file
+  zshai: config           show the settings file (config fixAttempts=2 changes one, config typos shows one)
+  zshai: model [3b]       list the models, or switch to another size
+  zshai: debug [n]        write a debug file for the last n requests (everything the model got and answered, test runs)
   zshai: prompt           edit the system prompt (prompt show · prompt reset)
   zshai: lang norwegian   switch language (english / norwegian)
   zshai: remember <text>  a note sent with requests ("my projects are in ~/git")
   zshai: forget <n|all>   remove notes
   zshai: theme [name]     show and pick a colour theme
   zshai: auto on|off      also send plain text without "zshai:" to zshai (now: `+onOff(L, cfg.AutoDetect)+`)
+  zshai: typos on|off     suggest the right command for a typo, like rn → rm (now: `+onOff(L, cfg.Typos)+`)
 `)
 	case "theme", "tema":
 		if rest == "" {
@@ -281,6 +312,17 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
 		}
 		_ = config.Save(cfg)
 		return t(L, "Automatisk gjenkjenning: ", "Auto-detect: ") + onOff(L, cfg.AutoDetect) + "\n"
+	case "typos", "typo", "skrivefeil":
+		switch rest {
+		case "på", "on":
+			cfg.Typos = true
+		case "av", "off":
+			cfg.Typos = false
+		default:
+			return t(L, "Skrivefeilforslag: ", "Typo suggestions: ") + onOff(L, cfg.Typos) + "\n"
+		}
+		_ = config.Save(cfg)
+		return t(L, "Skrivefeilforslag: ", "Typo suggestions: ") + onOff(L, cfg.Typos) + "\n"
 	case "angre", "undo":
 		return undo(L) + "\n"
 	case "språk", "sprak", "lang", "language":
@@ -300,6 +342,9 @@ func metaRun(L msg.L, cfg config.Config, word, rest string) string {
 	case "status":
 		return statusText(L, cfg)
 	case "config", "konfig", "innstillinger", "settings":
+		if rest != "" {
+			return configSet(L, rest)
+		}
 		data, err := os.ReadFile(config.Path())
 		if err != nil {
 			return config.Path() + t(L, ": finnes ikke ennå (standardverdier brukes)\n", ": does not exist yet (defaults are used)\n")
@@ -559,6 +604,20 @@ func statusText(L msg.L, cfg config.Config) string {
 	}
 	if c, err := azcat.Get(); err == nil {
 		fmt.Fprintf(&b, "  az catalog: az %s, %d commands (%s)\n", c.Version, len(c.Commands), c.Source)
+	}
+	if e := cfg.Escalate; e.Server != "" && e.Model != "" {
+		fmt.Fprintf(&b, t(L, "  større modell for siste forsøk: %s @ %s\n", "  larger model for the last try: %s @ %s\n"), e.Model, e.Server)
+	}
+	switch k := sandbox.Kind(); {
+	case !cfg.TestRun:
+		fmt.Fprint(&b, t(L, "  testkjøring: av (testRun)\n", "  test runs: off (testRun)\n"))
+	case k != "":
+		fmt.Fprintf(&b, t(L, "  testkjøring: i en kopi av mappa (%s)\n", "  test runs: in a copy of the folder (%s)\n"), k)
+	case runtime.GOOS == "linux":
+		fmt.Fprint(&b, t(L, "  testkjøring: ingen sandkasse (installer bubblewrap: sudo apt install bubblewrap)\n",
+			"  test runs: no sandbox (install bubblewrap: sudo apt install bubblewrap)\n"))
+	default:
+		fmt.Fprint(&b, t(L, "  testkjøring: ingen sandkasse\n", "  test runs: no sandbox\n"))
 	}
 	fmt.Fprintf(&b, "  config: %s\n  log: %s\n", config.Path(), store.Path())
 	return b.String()

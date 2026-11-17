@@ -39,6 +39,12 @@ CATS = {
     "explain":   (["", "projects/*"], "\"explain …\" / \"forklar …\" / \"what does … do\" about a concrete shell command the user writes out"),
     "ambiguous": (["", "Downloads"], "vague requests where a careful assistant should ask a short clarifying question first (e.g. 'delete the files', 'move them')"),
     "risky":     (["", "projects/*"], "dangerous things: delete everything, force push, reset hard, wipe a disk, chmod -R 777"),
+    # round 2 (zshai 0.4.1): files with content, PowerShell-style tables and lists (zshai fmt)
+    "create":    (["", "Documents", "data", "Downloads", "projects"], "create a NEW file with content: a JSON or CSV file with a few made-up "
+                  "records (names, emails, cities, products, prices), a short text or Markdown note, a small config file (YAML, INI, "
+                  ".env-style), a tiny shell script; usually say the file name or at least the file type"),
+    "fmt":       (["data"], "show JSON, JSON Lines or CSV data as a table or as a list (one block per record), only some "
+                  "fields/columns, sorted by a field, the top N, or filtered (only rows where …)"),
 }
 
 LANG = {"en": "English", "no": "Norwegian Bokmål (casual, the way Norwegians type in a terminal)"}

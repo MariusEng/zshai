@@ -62,8 +62,17 @@ func Check(s *shell.Script, env Env) Result {
 		r.Problems = append(r.Problems, "zsh syntax error: "+err.Error())
 	}
 	seenMissing := map[string]bool{}
-	for _, c := range s.Cmds {
+	made := map[string]bool{} // files earlier commands write (cat > run.sh <<EOF … ; ./run.sh)
+	for i, c := range s.Cmds {
+		if i > 0 {
+			for _, f := range written(&shell.Script{Cmds: s.Cmds[i-1 : i]}) {
+				made[filepath.Clean(f)] = true
+			}
+		}
 		if c.Name == "" || c.Name == ":" || c.Remote != "" {
+			continue
+		}
+		if c.Path != "" && made[filepath.Clean(c.Path)] {
 			continue
 		}
 		if !exists(c, env) {
@@ -83,6 +92,18 @@ func Check(s *shell.Script, env Env) Result {
 		r.Problems = append(r.Problems, jqCheck(c, env.Cwd)...)
 		r.Problems = append(r.Problems, quotedTilde(c)...)
 		switch c.Name {
+		case "exit", "logout", "bye":
+			// commands run in the user's own interactive shell: exit closes their terminal
+			if c.Remote == "" && !c.InSubshell {
+				r.Problems = append(r.Problems, c.Name+" would close the user's terminal (the command runs in their interactive shell): "+
+					"leave it out; to signal failure use false or return a status from a pipeline")
+			}
+		case "tr":
+			// tr only reads stdin: with nothing piped or redirected in, it waits for the keyboard
+			if c.PipeFrom == nil && c.Remote == "" && !slices.ContainsFunc(c.Redirs, func(r shell.Redir) bool { return strings.HasPrefix(r.Op, "<") }) {
+				r.Problems = append(r.Problems, "tr only reads stdin, and nothing is piped into it here, so it would wait for the keyboard: "+
+					"pipe text into it (echo \"$x\" | tr …) or give it a file (tr … < f)")
+			}
 		case "zshai":
 			r.Problems = append(r.Problems, fmtCheck(c, env.Cwd)...)
 		case "git":

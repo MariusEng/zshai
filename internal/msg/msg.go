@@ -12,6 +12,7 @@ import (
 
 	"github.com/MariusEng/zshai/internal/dryrun"
 	"github.com/MariusEng/zshai/internal/risk"
+	"github.com/MariusEng/zshai/internal/sandbox"
 )
 
 type L struct{ No bool }
@@ -333,6 +334,14 @@ func (l L) Unchecked(problems []string) string {
 	return l.t("Obs, kommandoen besto ikke kontrollen: ", "Note, the command failed zshai's checks: ") + strings.Join(problems, "; ")
 }
 
+// AskedAgain: the model asked its question again after the user answered it.
+func (l L) AskedAgain() string {
+	return l.t("Modellen spurte om det samme igjen i stedet for å bruke svaret ditt, så jeg stopper her. "+
+		"Skriv hele forespørselen på nytt med svaret i.",
+		"The model asked the same thing again instead of using your answer, so I stopped. "+
+			"Write the whole request again with the answer in it.")
+}
+
 func (l L) Gave(problems []string) string {
 	return l.t("Fant ingen kommando som besto kontrollen: ", "Couldn't find a command that passed the checks: ") + strings.Join(problems, "; ")
 }
@@ -347,3 +356,73 @@ func (l L) Retrying() string       { return l.t("prøver igjen", "retrying") }
 func (l L) ThinkingHarder() string { return l.t("tenker hardere", "thinking harder") }
 func (l L) Fixing() string         { return l.t("retter feilen", "fixing it") }
 func (l L) StartingModel() string  { return l.t("starter modellen", "starting the model") }
+
+// Tested says what a test run in a copy of the folder did (internal/sandbox).
+func (l L) Tested(c sandbox.Check) string {
+	count := func(n int, oneNo, manyNo, oneEn, manyEn string) string {
+		if n == 1 {
+			return l.t("1 "+oneNo, "1 "+oneEn)
+		}
+		return l.t(fmt.Sprintf("%d %s", n, manyNo), fmt.Sprintf("%d %s", n, manyEn))
+	}
+	var parts []string
+	for i, f := range c.Files {
+		if i == 4 {
+			parts = append(parts, l.t(fmt.Sprintf("+%d til", len(c.Files)-i), fmt.Sprintf("+%d more", len(c.Files)-i)))
+			break
+		}
+		slash := ""
+		if f.IsDir {
+			slash = "/"
+		}
+		var s string
+		switch f.Kind {
+		case "created":
+			s = l.t("lager ", "creates ") + f.Path + slash
+		case "modified":
+			s = l.t("endrer ", "changes ") + f.Path
+		case "deleted":
+			s = l.t("sletter ", "deletes ") + f.Path + slash
+		case "moved":
+			s = l.t("flytter ", "moves ") + f.From + slash + " → " + f.Path + slash
+		}
+		var facts []string
+		switch {
+		case f.Kind == "deleted" || f.Kind == "moved" || f.IsDir:
+		case f.Kind == "created" && f.Size == 0:
+			facts = append(facts, l.t("tom", "empty"))
+		case f.Valid && f.Format == "csv":
+			facts = append(facts, count(f.Items, "rad", "rader", "row", "rows"))
+		case f.Valid:
+			facts = append(facts, count(f.Items, "element", "elementer", "item", "items"))
+		case f.Format == "text" && f.Items >= 0:
+			facts = append(facts, count(f.Items, "linje", "linjer", "line", "lines"))
+		}
+		if f.Valid {
+			facts = append(facts, l.t("gyldig ", "valid ")+strings.ToUpper(strings.TrimSuffix(f.Format, "l")))
+		}
+		if len(facts) > 0 {
+			s += " (" + strings.Join(facts, ", ") + ")"
+		}
+		parts = append(parts, s)
+	}
+	head := l.t("Testkjørt i en kopi av mappa: ", "Test-ran in a copy of the folder: ")
+	switch {
+	case c.Denied:
+		head = l.t("Bare delvis testkjørt (den bruker nettet eller noe utenfor mappa, og det ble stoppet i testen): ",
+			"Only partly test-ran (it uses the network or something outside the folder, which the test blocks): ")
+	case c.TimedOut:
+		head = l.t("Bare delvis testkjørt (tok mer enn 3 s): ", "Only partly test-ran (took more than 3 s): ")
+	}
+	if len(parts) == 0 {
+		return head + l.t("endrer ingen filer her.", "changes no files here.")
+	}
+	return head + strings.Join(parts, "; ") + "."
+}
+
+func (l L) Testing() string { return l.t("testkjører", "test-running") }
+
+// Escalated: the command came from the larger model (config "escalate").
+func (l L) Escalated(model string) string {
+	return l.t("svaret kom fra den større modellen ("+model+")", "the answer came from the larger model ("+model+")")
+}

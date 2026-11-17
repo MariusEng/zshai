@@ -36,6 +36,7 @@ CANNED = {
     "tenk lenge": "r: read\nm: run\na:\nn:\nx: 0\n---\nprint ferdig",
     "ordrene som tabell": "r: read\nm: run\na:\nn:\nx: 0\n---\njq -r '(.[0] | keys_unsorted) as $k | ($k | @tsv), "
                           "(.[] | [.[$k[]] | tostring] | @tsv)' orders.json | column -t -s $'\\t'",
+    "process.csv som en tabell": "r: read\nm: run\na:\nn:\nx: 0\n---\ncolumn -s, -t process.csv",
     "hvor mange rader": "r: read\na:\nn:\nx: 0\n---\ntail -n +2 sales.csv | wc -l",
     "slett loggfilene": "r: delete\na:\nn:\nx: 0\n---\nfind ./logs -name '*.log' -mtime +7 -delete",
     "slett alle loggfilene": "r: delete\na:\nn:\nx: 0\n---\nrm logs/*.log",
@@ -46,6 +47,10 @@ CANNED = {
     "slett hjemmemappa": "r: danger\na:\nn:\nx: 0\n---\nrm -rf ~",
     # the model says run, but "hvordan" must still only show
     "hvordan sletter jeg loggfilene": "r: delete\nm: run\na:\nn:\nx: 0\n---\nrm logs/*.log",
+    # 7-Zip: the model writes 7z and "-o dir"; this machine only has 7zz (a stand-in in .bin)
+    "pakk ut backup.7z": "r: change\na:\nn:\nx: 0\n---\n7z x backup.7z -o ut",
+    # zsh's (.) qualifier: plain files only; zshai's own delete must see the same files
+    "slett alle zshai* filer": "r: delete\na:\nn:\nx: 0\n---\nrm -- zshai*(.)",
     "forklar tar": "r: change\nm: show\na:\nn:\nx: 0\ne: tar pakker ut (-x) et gzip-arkiv (-z) fra fila (-f) a.tgz,\ne: og viser hvert filnavn (-v).\n---\ntar -xzvf a.tgz",
 }
 
@@ -79,6 +84,31 @@ class FakeModel(http.server.BaseHTTPRequestHandler):
         # slow answers, so the spinner shows: the first try fails zshai's checks, the retry works
         if "tenk lenge" in req:
             time.sleep(1.2)
+        # seen on the Mac: a loop writing /tmp/navn$i.email for "a json file here"; the retry is right
+        if "json-fil i denne mappen" in req:
+            tries = sum(1 for m in body["messages"] if m["role"] == "user")
+            bad = "for ((i=1; i<=5; i++)); do\n  echo \"navn: $i.email@x.de\" > /tmp/navn$i.email\ndone"
+            good = "cat > navn.json <<'EOF'\n[{\"navn\": \"Kari\", \"epost\": \"kari@example.com\"}]\nEOF"
+            fix = good if tries > 1 and "aldri" not in req else bad
+            reply = "r: change\nm: run\na:\nn:\nx: 0\n---\n" + fix
+        # escalation: zshai-mini-style answers fail; the larger model (model "big") gets it right
+        if "lag dummy.json" in req:
+            if body.get("model") == "big":
+                reply = ("r: change\nm: run\na:\nn:\nx: 0\n---\ncat > dummy.json <<'EOF'\n"
+                         "[{\"navn\": \"Kari\", \"epost\": \"kari@example.com\"}, {\"navn\": \"Ola\", \"epost\": \"ola@example.com\"}]\nEOF")
+            else:
+                reply = "r: change\nm: run\na:\nn:\nx: 0\n---\nprint 'name: x@y' > dummy.txt"
+        # seen on the Mac: the model asked the same question after every answer, forever.
+        # "zshai-filer": it stops asking once told the user answered; "zshai-ting": it never stops
+        if "zshai-filer" in req or "zshai-ting" in req:
+            told = any("already answered" in m["content"] for m in body["messages"] if m["role"] == "user")
+            ask = 'r: delete\na: Skal alle filene med "zshai" i navnet slettes, eller bare de i denne mappen?\nn:\nx: 0\n---\n'
+            if "earlier request" not in req:
+                reply = ask
+            elif told and "zshai-filer" in req:
+                reply = "r: delete\nm: run\na:\nn:\nx: 0\n---\nrm zshai-*.txt"
+            else:
+                reply = ask
         if "prøv igjen" in req:
             time.sleep(1.0)
             tries = sum(1 for m in body["messages"] if m["role"] == "user")
@@ -105,6 +135,18 @@ def fixtures(work):
         os.utime(p, (t, t))
     with open(f"{work}/orders.json", "w") as f:
         f.write('[{"id": 1, "customer": "Kari", "total": 250.5}, {"id": 12, "customer": "Ola Nordmann", "total": 9}]\n')
+    os.makedirs(f"{work}/zshai-0.4.0-darwin-arm64")
+    open(f"{work}/zshai-0.4.0-darwin-arm64/install.sh", "w").write("x\n")
+    for n in ("zshai-a.txt", "zshai-b.txt"):
+        open(f"{work}/{n}", "w").write("x\n")
+    open(f"{work}/process.csv", "w").close()  # empty: a command that wrote it failed
+    # a stand-in 7zz (macOS's 7-Zip name): x needs -oDIR glued, like the real one
+    os.makedirs(f"{work}/.bin")
+    with open(f"{work}/.bin/7zz", "w") as f:
+        f.write('#!/bin/sh\n[ "$1" = x ] || exit 7\nfor a; do case $a in -o) echo "Command Line Error" >&2; exit 7;; '
+                '-o*) mkdir -p "${a#-o}" && echo hi > "${a#-o}/inni.txt"; exit 0;; esac; done\necho hi > inni.txt\n')
+    os.chmod(f"{work}/.bin/7zz", 0o755)
+    open(f"{work}/backup.7z", "wb").write(b"7z\xbc\xaf\x27\x1c")
     with open(f"{work}/sales.csv", "w") as f:
         f.write("date,item,amount\n2026-11-01,a,10\n2026-11-02,b,20\n2026-11-03,c,30\n")
     repo = f"{work}/repo"
@@ -145,7 +187,7 @@ source {REPO}/plugin/zshai.plugin.zsh
 """)
     env = dict(os.environ)
     env.update({
-        "ZDOTDIR": zdot, "TERM": "xterm-256color", "PATH": REPO + ":" + env["PATH"],
+        "ZDOTDIR": zdot, "TERM": "xterm-256color", "PATH": f"{work}/.bin:" + REPO + ":" + env["PATH"],
         "ZSHAI_CONFIG_DIR": f"{work}/.cfg", "ZSHAI_STATE_DIR": f"{work}/.state", "ZSHAI_CACHE_DIR": f"{work}/.cache",
         "XDG_DATA_HOME": f"{work}/.xdg", "ZSHAI_TRASH_DIR": f"{work}/.xdg/Trash", "ZSHAI_SERVER": f"http://127.0.0.1:{port}/v1", "ZSHAI_MODEL": "fake",
         "ZSHAI_BG": "dark",  # no OSC 11 wait; the bg-detection scenarios unset it
@@ -156,6 +198,8 @@ source {REPO}/plugin/zshai.plugin.zsh
     bg_reply = extra_env.pop("_bg_reply", None)  # how the fake terminal answers OSC 11
     env.update(extra_env)
     os.makedirs(f"{work}/.cfg", exist_ok=True)
+    if cfg.get("escalate", {}).get("server") == "SELF":
+        cfg["escalate"]["server"] = env["ZSHAI_SERVER"]
     json.dump(cfg, open(f"{work}/.cfg/config.json", "w"))
     pid, fd = pty.fork()
     if pid == 0:
@@ -246,6 +290,45 @@ def trash_has(work, *names):
 
 
 SCENARIOS = {
+    "config-set-value": (
+        [("zshai: slett alle zshai-ting her\r", 2), ("zai:config fixAttempts=2\r", 1.5), ("zai: config escalate.apiKey=hemmelig\r", 1.5), ("zai: config escalate\r", 1.5)], None,
+        lambda w, s, a: has(s, "fixAttempts: 1 → 2", "Lagret i", "(hidden)") + ([] if "hemmelig" not in s.split("escalate.apiKey=hemmelig", 1)[-1] else ["the key was shown"])
+        + ([] if json.load(open(f"{w}/.cfg/config.json")).get("fixAttempts") == 2 else ["fixAttempts not saved"])),
+    "new-request-is-not-an-answer": (
+        [("zshai: slett alle zshai-ting her\r", 2), ("zshai: hvor mange rader er det i sales.csv?\r", 2)], None,
+        lambda w, s, a: has(s, "tail -n +2 sales.csv | wc -l") + exists(w, "zshai-a.txt")
+        + db_is(w, "select count(*) from responses where prompt like '%earlier request%'", [(0,)])),
+    "delete-plain-files-qualifier": (
+        [("zshai: slett alle zshai* filer i denne mappen\r", 2.5), ("j", 1.5)], None,
+        lambda w, s, a: has(s, "2 filer") + gone(w, "zshai-a.txt", "zshai-b.txt")
+        + exists(w, "zshai-0.4.0-darwin-arm64/install.sh") + trash_has(w, "zshai-a.txt", "zshai-b.txt")),
+    "followup-never-loops": (
+        [("zshai: slett alle zshai-filer i denne mappen\r", 2), ("?de i denne mappen\r", 2.5), ("j", 1.5)], None,
+        lambda w, s, a: gone(w, "zshai-a.txt", "zshai-b.txt")
+        + ([] if s.count("eller bare de i denne mappen?") == 1 else [f"asked {s.count('eller bare de i denne mappen?')} times"])),
+    "followup-gives-up-plainly": (
+        [("zshai: slett alle zshai-ting her\r", 2), ("?ja, her\r", 3)], None,
+        lambda w, s, a: has(s, "spurte om det samme igjen") + exists(w, "zshai-a.txt")
+        + ([] if s.count("eller bare de i denne mappen?") == 1 else [f"asked {s.count('eller bare de i denne mappen?')} times"])),
+    "sevenzip-name-and-output-fixed": (
+        [("zshai: pakk ut backup.7z til mappa ut\r", 2.5), ("j", 1.5)], None,
+        lambda w, s, a: has(s, "7zz x backup.7z -out") + exists(w, "ut/inni.txt")
+        + ([] if "Command Line Error" not in s else ["7-Zip got -o with a space"])),
+    "typo-fixed-in-prompt": (
+        [("rn sales.csv\r", 1.5)], None,
+        lambda w, s, a: has(s, "«rn» finnes ikke, mente du «rm»?") + exists(w, "sales.csv")
+        + ([] if ROWS_SEEN and ROWS_SEEN[-1].endswith("rm sales.csv") else [f"prompt should hold the fix, got {ROWS_SEEN[-1:]!r}"])
+        + ([] if "command not found" not in s else ["the typo ran"])),
+    "typo-enter-runs-fix": (
+        [("sl\r", 1.5), ("\r", 1)], None,
+        lambda w, s, a: has(s, "mente du «ls»?", "sales.csv") + ([] if "command not found" not in s else ["the typo ran"])),
+    "typo-after-pipe-next-line": (
+        [("ls | gerp sales\r", 2)], None,
+        lambda w, s, a: has(s, "command not found: gerp", "mente du «grep»?")
+        + ([] if ROWS_SEEN and "ls | grep sales" in ROWS_SEEN[-1] else [f"next prompt should hold the fix, got {ROWS_SEEN[-1:]!r}"])),
+    "typo-off-says-not-found": (
+        [("rn sales.csv\r", 1.5)], {"_cfg": {"typos": False}},
+        lambda w, s, a: has(s, "command not found: rn") + ([] if "mente du" not in s else ["suggested with typos off"])),
     "read-runs": (
         [("zshai: hvor mange rader er det i sales.csv?\r", 2)], None,
         lambda w, s, a: has(s, "hvor mange rader er det i sales.csv?", "tail -n +2 sales.csv | wc -l", "\n3")
@@ -365,7 +448,7 @@ SCENARIOS = {
     "stats-show-version-arch-and-numbers": (
         [("zshai: hvor mange rader er det i sales.csv?\r", 2), ("zshai: slett alle loggfilene\r", 2), ("n", 1),
          ("zai: stats\r", 1.5)], None,
-        lambda w, s, a: has(s, "zshai 0.2.0 (", "linux/" if sys.platform.startswith("linux") else "darwin/",
+        lambda w, s, a: has(s, f"zshai {open(REPO + '/VERSION').read().strip()} (", "linux/" if sys.platform.startswith("linux") else "darwin/",
                             "Statistikk", "forespørsler: 2", "kjørt: 1", "avbrutt: 1", "mest brukt:")),
     "meta-help-and-request-fallthrough": (
         [("zshai: hjelp\r", 0.8), ("zshai: status på repoet\r", 2)], None,
@@ -392,6 +475,24 @@ SCENARIOS = {
         [("zshai: vis ordrene som tabell\r", 2)], None,
         lambda w, s, a: has(s, "zshai fmt -t orders.json", "id customer     total", "-- --------     -----",
                             " 1 Kari         250.5", "12 Ola Nordmann     9")),
+    # zshai-mini's column table is rewritten to zshai fmt BEFORE the checks: an empty file is
+    # caught before anything runs, and no "fix" repeats the failed command (seen on the Mac)
+    "empty-csv-caught-before-running": (
+        [("zai: vist process.csv som en tabell\r", 2.5)], None,
+        lambda w, s, a: has(s, "process.csv is empty")
+        + (["the failing command ran"] if any("➜" in l and l.rstrip().endswith("zshai fmt -t process.csv") for l in s.splitlines()) else [])
+        + (["a fix was offered"] if "Forslag til retting" in s else [])),
+    "new-file-here-not-tmp": (
+        [("zai: opprett en json-fil i denne mappen med 5 navn\r", 2.5), ("j", 1.5)], None,
+        lambda w, s, a: has(s, "cat > navn.json") + exists(w, "navn.json")
+        + (["wrote to /tmp"] if "/tmp/navn" in s else [])),
+    "new-file-bad-is-refused": (
+        [("zai: opprett en json-fil i denne mappen, aldri riktig\r", 3)], None,
+        lambda w, s, a: has(s, "Fant ingen kommando som besto kontrollen") + gone(w, "navn.json")),
+    "escalates-to-larger-model": (
+        [("zai: lag dummy.json med 2 navn\r", 3), ("j", 1.5)],
+        {"_cfg": {"escalate": {"server": "SELF", "model": "big"}}},
+        lambda w, s, a: has(s, "cat > dummy.json", "svaret kom fra den større modellen (big)") + exists(w, "dummy.json")),
     "shell-lines-stay-shell": (
         [("ls\r", 0.6), ("69\r", 0.6), ("gst\r", 0.8), (",echo komma\r", 0.6)], {"_cfg": {"autoDetect": True}},
         lambda w, s, a: has(s, "sales.csv", "command not found: 69", "komma")

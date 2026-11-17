@@ -323,11 +323,61 @@ func expandOperands(c *shell.Cmd, env Env) ([]string, bool) {
 				continue
 			}
 		}
+		if src := wordSrc(w); zshQualRe.MatchString(src) {
+			// a zsh glob qualifier (zshai*(.) = plain files): only zsh knows what it matches
+			fields, ok := zshGlob(src, env.Cwd)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, fields...)
+			continue
+		}
 		fields, err := expand.Fields(cfg, w)
 		if err != nil {
 			return nil, false
 		}
 		out = append(out, fields...)
+	}
+	return out, true
+}
+
+// zshQualRe: a glob with a zsh qualifier at the end: *(.) *(/) *(.om[1,5]) *(N.mh-1)
+var zshQualRe = regexp.MustCompile(`[*?\]][^/]*\(([^()]*)\)$`)
+
+// +name in a qualifier calls a shell function
+var qualFuncRe = regexp.MustCompile(`\+[A-Za-z_]`)
+
+func wordSrc(w *syntax.Word) string {
+	var b strings.Builder
+	_ = syntax.NewPrinter().Print(&b, w)
+	return b.String()
+}
+
+// zshGlob expands one glob word with zsh, in the folder. Only qualifiers that select
+// files: e:…: and +func run code, and $ / ` would expand more than a glob, so those are
+// not planned (the dry run then says it can't tell what the command touches).
+func zshGlob(src, cwd string) ([]string, bool) {
+	m := zshQualRe.FindStringSubmatch(src)
+	if m == nil {
+		return nil, false
+	}
+	q := m[1]
+	if strings.ContainsAny(src, "$`'\"\\\n;|&<>") || strings.ContainsAny(q, "eP") || qualFuncRe.MatchString(q) {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "zsh", "-f", "-c", "setopt nullglob; print -rN -- "+src)
+	cmd.Dir = cwd
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	var out []string
+	for _, f := range strings.Split(string(b), "\x00") {
+		if f != "" {
+			out = append(out, f)
+		}
 	}
 	return out, true
 }

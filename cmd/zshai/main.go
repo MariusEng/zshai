@@ -36,6 +36,7 @@ import (
 	"github.com/MariusEng/zshai/internal/prompt"
 	"github.com/MariusEng/zshai/internal/risk"
 	"github.com/MariusEng/zshai/internal/router"
+	"github.com/MariusEng/zshai/internal/sandbox"
 	"github.com/MariusEng/zshai/internal/shell"
 	"github.com/MariusEng/zshai/internal/spinner"
 	"github.com/MariusEng/zshai/internal/store"
@@ -59,6 +60,9 @@ func main() {
 	switch os.Args[1] {
 	case "route":
 		os.Exit(cmdRoute(os.Args[2:]))
+	case "typo":
+		// for the plugin: the command a mistyped first word was meant to be
+		os.Exit(cmdTypo(os.Args[2:]))
 	case "ask":
 		cmdAsk(os.Args[2:])
 	case "confirm":
@@ -74,6 +78,10 @@ func main() {
 		cmdLog(os.Args[2:])
 	case "show":
 		cmdShow(os.Args[2:])
+	case "debug":
+		// the same as "zshai: debug [n|id]"
+		cfg := config.Load()
+		fmt.Print(debugMeta(msg.New(cfg.Language), cfg, strings.Join(os.Args[2:], " ")))
 	case "undo", "angre":
 		fmt.Println(undo(msg.New(config.Load().Language)))
 	case "meta":
@@ -102,7 +110,7 @@ func main() {
 	case "settings":
 		// for the plugin: the settings it needs, as zsh assignments
 		c := config.Load()
-		fmt.Printf("_zshai_auto=%d _zshai_fix=%d\n", b2i(c.AutoDetect), b2i(c.FixAttempts > 0))
+		fmt.Printf("_zshai_auto=%d _zshai_fix=%d _zshai_typos=%d\n", b2i(c.AutoDetect), b2i(c.FixAttempts > 0), b2i(c.Typos))
 	case "auto":
 		// for the plugin: is auto-detect on?
 		if config.Load().AutoDetect {
@@ -131,6 +139,43 @@ func main() {
 			if !localmodel.Stop() {
 				fmt.Println("llama-server was not started by zshai")
 			}
+			return
+		case "list", "ls":
+			fmt.Print(localmodel.List())
+			return
+		case "install", "add", "use", "remove", "rm":
+			if len(os.Args) < 4 {
+				fmt.Fprintf(os.Stderr, "zshai model %s <1.5b|3b>\n", sub)
+				os.Exit(2)
+			}
+			name := strings.ToLower(os.Args[3])
+			if sub == "remove" || sub == "rm" {
+				if err := localmodel.Remove(name); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				fmt.Println("removed", name)
+				return
+			}
+			if sub == "install" || sub == "add" {
+				if err := localmodel.Install(name, os.Stderr); err != nil {
+					fmt.Fprintln(os.Stderr, "zshai model install:", err)
+					os.Exit(1)
+				}
+			}
+			if _, ok := localmodel.Installed()[name]; !ok {
+				fmt.Fprintf(os.Stderr, "the %s model is not installed (zshai model install %s)\n", name, name)
+				os.Exit(1)
+			}
+			c := config.Load()
+			c.LocalModel = name
+			if err := config.Save(c); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			localmodel.Stop() // the next request starts the chosen model
+			fmt.Println("using", name)
+			fmt.Print(localmodel.List())
 			return
 		}
 		fmt.Println(localmodel.Status())
@@ -168,8 +213,10 @@ func usage() {
   zshai undo                   reverse the last AI move/delete/git reset
   zshai log [n] [--changed]    the latest requests from the log (~/.local/state/zshai/zshai.db)
   zshai log --id <id>          one request: prompts, model replies, effects
+  zshai debug [n|id]           write a debug report of the last n requests to a file
   zshai meta -- 'zshai: help'  zshai's own commands (exit 3: not one, it's a request)
   zshai model [start|stop]     the bundled model (config "server": "local")
+  zshai model list|install|use|remove <1.5b|3b>      choose zshai-mini's size
   zshai az-catalog             re-extract the Azure CLI catalog from your az
   zshai --lang en|no
 `)
@@ -341,6 +388,7 @@ func cmdAsk(args []string) {
 	fixOf := fs.String("fix-of", "", "")
 	failExit := fs.Int("fail-exit", 0, "")
 	stderrFile := fs.String("stderr", "", "")
+	newReq := fs.Bool("new", false, "a new request (zshai: …), never the answer to an earlier question")
 	_ = fs.Parse(args)
 	request := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	cfg := config.Load()
@@ -383,8 +431,10 @@ func cmdAsk(args []string) {
 	// a follow-up to a clarifying question
 	prev := loadPendingAsk()
 	fullReq := request
-	if prev != nil && failed == nil && time.Since(prev.Started) < 10*time.Minute {
+	answered := "" // the user's answer to zshai's question, when this is one
+	if prev != nil && failed == nil && !*newReq && time.Since(prev.Started) < 10*time.Minute {
 		fullReq = fmt.Sprintf("%s (earlier request: %q; you asked: %q; this is the answer)", request, prev.Request, prev.Asked)
+		answered = request
 	}
 	clearPendingAsk()
 
@@ -428,12 +478,14 @@ func cmdAsk(args []string) {
 	var vres validate.Result
 	var problems []string
 	var missing []string
+	var tested *sandbox.Check // what a test run in a copy of the folder did
 	show := llm.WantsShow(request) && failed == nil
 	if show {
 		msgs[0].Content += "mode: show\n"
 	} else {
 		msgs[0].Content += "mode: run\n"
 	}
+	escalated := ""
 	for attempt := 0; attempt < 3; attempt++ {
 		switch attempt {
 		case 1:
@@ -441,14 +493,40 @@ func cmdAsk(args []string) {
 		case 2:
 			spin.Set(L.ThinkingHarder())
 		}
-		at := time.Now()
-		raw, dur, err := client.Chat(context.Background(), msgs)
-		turn.ModelMs += dur.Milliseconds()
-		call := store.Response{At: at, Prompt: msgs[len(msgs)-1].Content, Response: raw, Seconds: dur.Seconds()}
-		if err != nil {
-			call.Error = err.Error()
+		var raw string
+		var dur time.Duration
+		var err error
+		if attempt == 2 && cfg.Escalate.Server != "" && cfg.Escalate.Model != "" {
+			// thinking harder: the last try goes to a larger model, with the full rules
+			// and the conversation so far (the failed answers and what was wrong)
+			esc := llm.Client{Server: cfg.Escalate.Server, Model: cfg.Escalate.Model, APIKey: cfg.Escalate.APIKey,
+				Timeout: time.Duration(max(cfg.Escalate.TimeoutSeconds, cfg.TimeoutSeconds)) * time.Second}
+			esc.System = prompt.Render(tmpl, llm.SystemFor(esc.Model), prompt.MachineValues(ci.OSName, ci.Flavour, ci.Manager, cfg.Language))
+			at := time.Now()
+			raw, dur, err = esc.Chat(context.Background(), msgs)
+			turn.ModelMs += dur.Milliseconds()
+			call := store.Response{Model: esc.Model, System: esc.System, At: at, Prompt: msgs[len(msgs)-1].Content, Response: raw, Seconds: dur.Seconds()}
+			if err != nil {
+				call.Error = err.Error()
+			}
+			turn.Calls = append(turn.Calls, call)
+			if err == nil {
+				escalated = esc.Model
+			}
 		}
-		turn.Calls = append(turn.Calls, call)
+		if escalated == "" {
+			if attempt == 2 && err != nil {
+				err = nil // the larger model is unreachable: the last try stays with the usual one
+			}
+			at := time.Now()
+			raw, dur, err = client.Chat(context.Background(), msgs)
+			turn.ModelMs += dur.Milliseconds()
+			call := store.Response{At: at, Prompt: msgs[len(msgs)-1].Content, Response: raw, Seconds: dur.Seconds()}
+			if err != nil {
+				call.Error = err.Error()
+			}
+			turn.Calls = append(turn.Calls, call)
+		}
 		if err != nil {
 			turn.Outcome, turn.Error = "error", err.Error()
 			emit(map[string]string{"status": "error", "msg": L.Unreachable(err)})
@@ -458,6 +536,11 @@ func cmdAsk(args []string) {
 		turn.ModelRisk = ans.Risk
 		if err != nil {
 			problems = []string{err.Error()}
+		} else if ans.Ask != "" && ans.Script == "" && answered != "" {
+			// the user already answered a question: one question per request, never a loop
+			// ("Skal alle … slettes?" → "i denne mappen" → the same question again, forever)
+			problems = []string{fmt.Sprintf("the user already answered your question (%q is the answer to %q): "+
+				"don't ask again; write the command for the earlier request, using that answer", answered, prev.Asked)}
 		} else if ans.Ask != "" && ans.Script == "" {
 			turn.Outcome, turn.Mode = "asked", "ask"
 			savePendingAsk(&turnState{ID: id, Request: fullReq, Asked: ans.Ask, Started: time.Now()})
@@ -473,12 +556,35 @@ func cmdAsk(args []string) {
 			problems = []string{"the command is empty"}
 		} else {
 			script, err = shell.Parse(ans.Script, aliases)
+			if err == nil {
+				// 7-Zip: the name installed here (7z → 7zz on a Mac), and -o glued to its folder
+				if sz := validate.SevenZip(ans.Script); sz != "" {
+					if s2, err2 := shell.Parse(sz, aliases); err2 == nil {
+						ans.Script, script = sz, s2
+					}
+				}
+			}
+			if err == nil && cfg.Tables != "column" && !(show || ans.Show) {
+				// PowerShell-style tables: the jq/column table recipes become zshai fmt -t.
+				// Before the checks, so the command that runs is the one that gets checked
+				// (zshai fmt on the real file, "this is the command that failed").
+				if ps := validate.PSTable(ans.Script, *cwd); ps != "" {
+					if s2, err2 := shell.Parse(ps, aliases); err2 == nil {
+						ans.Script, script = ps, s2
+					}
+				}
+			}
 			if err != nil {
 				problems = []string{"syntax error: " + err.Error()}
 			} else {
 				vres = validate.Check(script, venv)
 				problems = vres.Problems
 				missing = vres.Missing
+				if !(show || ans.Show) {
+					// a file of the kind asked for, in the folder asked for (not /tmp)
+					home, _ := os.UserHomeDir()
+					problems = append(problems, validate.NewFile(script, request, *cwd, home)...)
+				}
 				if show || ans.Show {
 					// explaining a command for a program that isn't here is fine: no retry for that
 					problems = slices.DeleteFunc(slices.Clone(problems), func(p string) bool {
@@ -509,6 +615,38 @@ func cmdAsk(args []string) {
 					turn.Command = ans.Script
 					emitNeeds(vres.Missing[0], request, *cwd, cfg, L, &turn, id)
 					return
+				}
+				// a command that changes files: run it once in a sandboxed copy of the folder
+				tested = nil
+				if len(problems) == 0 && !(show || ans.Show) && cfg.TestRun {
+					home, _ := os.UserHomeDir()
+					rk := risk.Classify(script, risk.Env{Home: home, OS: ci.OS, Az: cat, ProtectedSubs: cfg.ProtectedSubscriptions, CurrentSub: sub})
+					if (rk.Level == risk.Change || rk.Level == risk.Delete) && testable(script) {
+						spin.Set(L.Testing())
+						t0 := time.Now()
+						res, err := sandbox.Run(ans.Script, *cwd, 3*time.Second)
+						if err == nil {
+							c := sandbox.Judge(res, request)
+							if fo := validate.FilesOnly(ans.Script); c.DirsHit && fo != "" {
+								// "rm zshai*" hit folders the user didn't ask about: keep plain
+								// files (zsh's (.)) and test that instead, without the model
+								if s2, err2 := shell.Parse(fo, aliases); err2 == nil {
+									if res2, err3 := sandbox.Run(fo, *cwd, 3*time.Second); err3 == nil {
+										c2 := sandbox.Judge(res2, request)
+										turn.Tests = append(turn.Tests, testLog(ans.Script, res, c, L.Tested(c), time.Since(t0)))
+										res.Close()
+										ans.Script, script, res, c = fo, s2, res2, c2
+									}
+								}
+							}
+							res.Close()
+							problems = append(problems, c.Problems...)
+							tested = &c
+							turn.Tests = append(turn.Tests, testLog(ans.Script, res, c, L.Tested(c), time.Since(t0)))
+						} else {
+							turn.Tests = append(turn.Tests, store.Test{Command: ans.Script, Exit: -1, Stderr: "not test-run: " + err.Error()})
+						}
+					}
 				}
 			}
 		}
@@ -560,18 +698,15 @@ func cmdAsk(args []string) {
 	}
 	if len(problems) > 0 {
 		turn.Outcome = "refused"
+		if answered != "" && ans.Script == "" && ans.Ask != "" {
+			// it still asked: say so plainly instead of the checks' English
+			emit(map[string]string{"status": "error", "msg": L.AskedAgain()})
+			return
+		}
 		emit(map[string]string{"status": "error", "msg": L.Gave(problems), "cmd": ans.Script})
 		return
 	}
 
-	if cfg.Tables != "column" {
-		// PowerShell-style tables: the jq/column table recipes become zshai fmt -t
-		if ps := validate.PSTable(ans.Script, *cwd); ps != "" {
-			if s2, err := shell.Parse(ps, aliases); err == nil {
-				ans.Script, script = ps, s2
-			}
-		}
-	}
 	home, _ := os.UserHomeDir()
 	rk := risk.Classify(script, risk.Env{Home: home, OS: ci.OS, Az: cat, ProtectedSubs: cfg.ProtectedSubscriptions, CurrentSub: sub})
 	level := rk.Level
@@ -601,6 +736,12 @@ func cmdAsk(args []string) {
 	notes = append(notes, vres.Warnings...)
 	if len(rk.Remote) > 0 {
 		notes = append(notes, L.Remote(rk.Remote))
+	}
+	if tested != nil {
+		out["tested"] = L.Tested(*tested)
+	}
+	if escalated != "" {
+		notes = append(notes, L.Escalated(escalated))
 	}
 	// the dry-run question explains the risk in the user's language; otherwise show the rule's reason
 	if plan == nil || plan.Unknown {
@@ -633,6 +774,43 @@ func cmdAsk(args []string) {
 		turn.Outcome = "asked-confirm"
 	}
 	emit(out)
+}
+
+// testLog: a test run for the log (zshai log --id, zshai: debug).
+func testLog(cmd string, r *sandbox.Result, c sandbox.Check, summary string, d time.Duration) store.Test {
+	t := store.Test{Command: cmd, Exit: r.Exit, TimedOut: r.TimedOut, Denied: r.Denied, Stdout: r.Stdout, Stderr: r.Stderr,
+		Problems: c.Problems, Summary: summary, Seconds: d.Seconds()}
+	if len(t.Stdout) > 4000 {
+		t.Stdout = t.Stdout[:4000] + "\n…"
+	}
+	for _, e := range r.Effects {
+		s := e.Kind + " " + e.Path
+		if e.From != "" {
+			s = e.Kind + " " + e.From + " → " + e.Path
+		}
+		if !e.IsDir && e.Kind != "deleted" {
+			s += fmt.Sprintf(" (%d B)", e.Size)
+		}
+		t.Effects = append(t.Effects, s)
+	}
+	return t
+}
+
+// testable: nothing in the command acts outside the folder's files (system settings,
+// processes, other machines, package managers) or waits for a person.
+func testable(s *shell.Script) bool {
+	if s.HasFunc {
+		return false
+	}
+	for _, c := range s.Cmds {
+		if sandbox.Untestable[c.Name] || c.Remote != "" || slices.Contains(c.Wrappers, "sudo") || slices.Contains(c.Wrappers, "doas") {
+			return false
+		}
+		if c.Name == "git" && len(c.Args) > 0 && slices.Contains([]string{"push", "pull", "fetch", "clone", "remote", "submodule", "lfs"}, c.Args[0]) {
+			return false
+		}
+	}
+	return true
 }
 
 func emitNeeds(tool, request, cwd string, cfg config.Config, L msg.L, turn *journal.Turn, id string) {
@@ -879,6 +1057,18 @@ func cmdCheck(args []string) {
 	fmt.Println("risk:", r.Level)
 	for _, f := range r.Findings {
 		fmt.Printf("  %-7s %s\n", f.Level, f.Why)
+	}
+	if (r.Level == risk.Change || r.Level == risk.Delete) && testable(s) {
+		if res, err := sandbox.Run(src, *cwd, 3*time.Second); err != nil {
+			fmt.Println("test run: not run:", err)
+		} else {
+			c := sandbox.Judge(res, "")
+			fmt.Printf("test run: exit %d, timed out %v, denied %v\n  %s\n", res.Exit, res.TimedOut, res.Denied, L.Tested(c))
+			for _, p := range c.Problems {
+				fmt.Println("  problem:", p)
+			}
+			res.Close()
+		}
 	}
 	if p := dryrun.Build(s, r, dryrun.Env{Cwd: *cwd, Home: home, Az: cat}); p != nil {
 		fmt.Println("question:", L.Question(p, r.Level, *cwd, sub))

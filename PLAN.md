@@ -1,5 +1,26 @@
 # zshai — plan
 
+## Round 2: model sizes and choice (started 2026-11-16)
+Real use on the Mac showed zshai-mini 0.5B can't write files with content, and answers zshai's
+feedback ("That reply failed zshai's checks") with unrelated trained recipes: it never saw a repair
+round. Decision (user, 2026-11-16): train **1.5B, 3B and 7B** on new data, measure, ship them as
+separate downloads and let users choose; the 0.5B is dropped if the measurements agree.
+- **Data:** new categories `create` (files with content) and `fmt` (PowerShell-style tables/lists,
+  `zshai fmt`); csv/json re-run with the new rules (round 1 taught `jq … | column`); **repair
+  examples** from real student failures (0.5B v2 on Linux, 1.5B v1 on macOS) + zshai's feedback →
+  the teacher's verified answer (`datagen/gen_repairs.py`). Filters drop table/list answers without
+  `zshai fmt` and empty-file answers to "create … with …" (`build_dataset.py`).
+- **Training:** `train/lora-{1.5b,3b,7b}.yaml`, same recipe, lr 3e-5 / 2e-5 / 1.5e-5.
+- **Eval:** bench (48) + held-out (214) + new held-out create/fmt (homes 9–10), teacher references
+  re-run with zshai 0.4.1; quality on the Mac, speed on Mac and Linux CPU.
+- **Shipping:** program bundles without a model; models in one release (`models-v3`), anything over
+  GitHub's 2 GiB/file limit split (`make models`); `zshai model install|use|list|remove`,
+  `zai: model [size]`, `install.sh --model`, config `localModel`.
+- **Result (2026-11-17, shipped in 0.5.0):** 3B v4 (= 3B v3 + table/list examples from
+  `datagen/gen_fmt.py`) valid 0.96 / first try 0.95, default on Apple Silicon; 1.5B v3 valid 0.94 /
+  first try 0.90, default elsewhere. 0.5B dropped (0.90 / 0.87). 7B dropped: undertrained at lr 1.5e-5
+  (val loss 0.36 vs 0.19 for the 3B; valid 0.86). Numbers in README "Training zshai-mini".
+
 ## Status (updated 2026-11-15)
 **zshai-mini v2 shipped as the default model (2026-11-15).** Phases 0/2/3 in a first, small form:
 - **Data:** `datagen/` (fixture homes, teacher-written requests in 29 categories × en/no, answers through

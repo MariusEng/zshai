@@ -12,7 +12,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.bui
 # the plugin carries the same version, so `zshai: status` can tell when the two don't match
 PLUGIN_SED := sed 's/^typeset -g ZSHAI_PLUGIN_VERSION=dev /typeset -g ZSHAI_PLUGIN_VERSION=$(VERSION) /' 
 
-.PHONY: build test catalog dist install clean llama install-model bundle
+.PHONY: build test catalog dist install clean llama install-model bundle models
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o zshai ./cmd/zshai
 
@@ -71,23 +71,35 @@ install-model:
 	install -m 644 $(MODEL) $(DATA_DIR)/models/
 	install -m 644 third_party/llama.cpp-LICENSE $(DATA_DIR)/llama.cpp-LICENSE
 
-# A release bundle for one platform: zshai + plugin + llama-server + model + install.sh.
+# A release bundle for one platform: zshai + plugin + llama-server + install.sh. The model is a
+# separate download (zshai model install <size>, from the models release; see make models).
 #   make bundle OS=darwin ARCH=arm64   (llama-server from build/darwin-arm64/, built on that platform)
+#   make bundle … WITH_MODEL=1         also put $(MODEL) in the bundle (offline installs)
 OS   ?= $(HOST_OS)
 ARCH ?= $(HOST_ARCH)
 bundle: dist
 	test -x build/$(OS)-$(ARCH)/llama-server || { echo "build/$(OS)-$(ARCH)/llama-server is missing: run make llama on that platform"; exit 1; }
-	test -n "$(MODEL)" || { echo "no models/zshai-mini-*.gguf"; exit 1; }
 	rm -rf dist/zshai-$(VERSION)-$(OS)-$(ARCH)
 	install -d dist/zshai-$(VERSION)-$(OS)-$(ARCH)/bin dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/models
 	install -m 755 dist/zshai-$(OS)-$(ARCH) dist/zshai-$(VERSION)-$(OS)-$(ARCH)/bin/zshai
 	install -m 755 build/$(OS)-$(ARCH)/llama-server dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/llama-server
-	install -m 644 $(MODEL) dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/models/
+	if [ -n "$(WITH_MODEL)" ]; then install -m 644 $(MODEL) dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/models/; fi
 	install -m 644 dist/zshai.plugin.zsh dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/zshai.plugin.zsh
 	install -m 644 third_party/llama.cpp-LICENSE LICENSE README.md dist/zshai-$(VERSION)-$(OS)-$(ARCH)/share/zshai/
 	install -m 755 scripts/install.sh dist/zshai-$(VERSION)-$(OS)-$(ARCH)/install.sh
 	tar -C dist -czf dist/zshai-$(VERSION)-$(OS)-$(ARCH).tar.gz zshai-$(VERSION)-$(OS)-$(ARCH)
 	ls -lh dist/zshai-$(VERSION)-$(OS)-$(ARCH).tar.gz
+
+# Model release files (the models-v3 release): each under GitHub's 2 GiB limit; bigger ones
+# are split with llama.cpp's gguf-split (llama-server loads the first part, finds the rest).
+#   make models GGUF="path/zshai-mini-1.5b-v3-Q4_K_M.gguf path/zshai-mini-3b-v3-Q4_K_M.gguf"
+GGUF_SPLIT ?= $(or $(firstword $(wildcard .tools/llama.cpp/build-*/bin/llama-gguf-split)),llama-gguf-split)
+models:
+	install -d dist/models
+	for g in $(GGUF); do n=$$(basename $$g .gguf); \
+	  if [ $$(wc -c < $$g) -gt 2000000000 ]; then $(GGUF_SPLIT) --split-max-size 1900M $$g dist/models/$$n; \
+	  else cp $$g dist/models/; fi; done
+	cd dist/models && (sha256sum *.gguf 2>/dev/null || shasum -a 256 *.gguf) > SHA256SUMS && cat SHA256SUMS
 
 clean:
 	rm -f zshai

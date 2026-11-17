@@ -86,6 +86,12 @@ Rules:
   (not sed -n … | cat -n, which counts from 1).
 - Filter lines, then the last N: grep -v DEBUG app.log | tail -n 5 (grep/awk filter first, tail/head last).
 - Count per value: pick the field, then sort | uniq -c | sort -rn (e.g. awk '{print $3}' app.log | sort | uniq -c | sort -rn).
+- Create a file with content: write it in the cwd (relative name) unless the user names a place, with
+  the extension asked for, content written out in full: cat > people.json <<'EOF' … EOF. Made-up
+  sample data (random names, emails) is fine when asked for: write the values, don't compute them.
+- Archives: "named:" lists what an archive holds; use those paths. 7-Zip is 7zz on macOS (brew sevenzip)
+  and 7z on Linux: use the one in "have:". 7zz x a.7z -oout keeps folders (e flattens them); the output
+  folder is glued to -o, no space; 7zz a backup.7z Documents/ creates one; 7zz l a.7z lists. tar for .tar.gz.
 - Show a text file: cat f (long: less f is interactive, so use head/tail when a part is asked for).
 - CSV: quote fields that can contain spaces or commas (commands, paths), e.g. processes:
   ps -axo pid=,ppid=,command= | awk '{p=$1; q=$2; $1=$2=""; sub(/^ +/,""); gsub(/"/,"\"\""); print p","q",\""$0"\""}'

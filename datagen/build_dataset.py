@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Kept examples (run_teacher.py output) -> MLX-LM chat data for zshai-mini.
 
-    python3 datagen/build_dataset.py OUTDIR ex-linux.jsonl ex-mac.jsonl ...
+    python3 datagen/build_dataset.py OUTDIR [--drop-cats csv,json:ex-old.jsonl …] ex-linux.jsonl ex-mac.jsonl repairs.jsonl ...
 
-Writes OUTDIR/train.jsonl and OUTDIR/valid.jsonl: {"messages": [system, user, assistant]}.
+Writes OUTDIR/train.jsonl and OUTDIR/valid.jsonl: {"messages": [system, user, assistant]}, or for
+repair examples (gen_repairs.py) [system, user, assistant (failed), user (zshai's feedback), assistant].
+--drop-cats C1,C2:FILE leaves those categories out of FILE (round 1's csv/json examples taught
+jq … | column tables; round 2 re-ran them with zshai fmt).
 The system prompt must stay byte-identical to llm.SystemMini (checked against llm.go).
 """
 import json, os, random, re, sys
@@ -18,6 +21,22 @@ def system_mini():
 def default_template():
     src = open(os.path.join(HERE, "..", "internal", "prompt", "prompt.go")).read()
     return re.search(r"const Default = `(.*?)`", src, re.S).group(1)
+
+# Round 2 filters: the teacher (qwen3-coder) doesn't always follow the newer rules; examples
+# that would teach the old habit are left out rather than learned.
+TABLE_ASK = re.compile(r"(?i)\b(?:som|as|i|in)\s+(?:en\s+|a\s+)?(?:tabell|table|liste|list)\b|\btabell\b|\btable\b")
+CONTENT_ASK = re.compile(r"(?i)\b(med|with|about|om|som inneholder|containing)\b")
+
+def unwanted(j):
+    """Why an example teaches the wrong thing, or ""."""
+    body = j["target"].split("\n---\n", 1)[-1].strip()
+    req = j.get("request") or (re.search(r"^request: (.*)$", j["prompt"], re.M) or [None, ""])[1]
+    if j.get("cat") in ("csv", "json", "fmt") and TABLE_ASK.search(req) and body and "zshai fmt" not in body:
+        return "table/list without zshai fmt"
+    if j.get("cat") == "create" and body and CONTENT_ASK.search(req) and \
+            re.fullmatch(r"(?:mkdir -p \S+ && )?touch \S+", body):
+        return "an empty file for a request with content"
+    return ""
 
 USERS = ["erik", "kari", "ola", "anna", "dev", "admin", "jonas", "user", "sam", "lee"]
 HOSTS = ["MacBook-Pro", "Mac", "server", "nas", "laptop", "devbox", "pi", "ubuntu", "arch", "mini"]
@@ -38,7 +57,18 @@ def render_system(tmpl, core, prompt, osname, lang, R):
     return re.sub(r"\{([a-z]+)\}", lambda m: core.strip() if m.group(1) == "zshai" else v.get(m.group(1), m.group(0)), out)
 
 def main():
-    out, files = sys.argv[1], sys.argv[2:]
+    out, args = sys.argv[1], sys.argv[2:]
+    drop, files = {}, []
+    i = 0
+    while i < len(args):
+        if args[i] == "--drop-cats":
+            cats, _, f = args[i + 1].partition(":")
+            drop[f] = set(cats.split(","))
+            files.append(f)
+            i += 2
+        else:
+            files.append(args[i])
+            i += 1
     core, tmpl = system_mini(), default_template()
     RS = random.Random(11)
     seen, rows = set(), []
@@ -46,19 +76,26 @@ def main():
     for f in files:
         for line in open(f):
             j = json.loads(line)
+            if j.get("cat") in drop.get(f, ()):
+                continue
             if "zshai-dg-" in j["prompt"] or "/tmp/" in j["target"] or not j.get("target"):
                 continue
-            key = (j["os"], j["prompt"])
+            if why := unwanted(j):
+                stats["dropped: " + why] = stats.get("dropped: " + why, 0) + 1
+                continue
+            key = (j["os"], j["prompt"], j.get("bad", ""))
             if key in seen:
                 continue
             seen.add(key)
             # clarifying questions are rare in the data but matter most for safety: weight them up
             reps = 4 if j["verified"] == "ask-judged" else 1
             for _ in range(reps):
-              rows.append({"seed": j["seed"], "messages": [
-                  {"role": "system", "content": render_system(tmpl, core, j["prompt"], j["os"], j["lang"], RS)},
-                  {"role": "user", "content": j["prompt"]},
-                  {"role": "assistant", "content": j["target"]}]})
+              msgs = [{"role": "system", "content": render_system(tmpl, core, j["prompt"], j["os"], j["lang"], RS)},
+                      {"role": "user", "content": j["prompt"]}]
+              if j.get("bad"):
+                  msgs += [{"role": "assistant", "content": j["bad"]}, {"role": "user", "content": j["feedback"]}]
+              msgs.append({"role": "assistant", "content": j["target"]})
+              rows.append({"seed": j["seed"], "messages": msgs})
             k = f'{j["os"]}/{j["verified"]}'
             stats[k] = stats.get(k, 0) + 1
     R = random.Random(7)

@@ -23,6 +23,9 @@ NOEXEC = re.compile(r"(^|[|;&(]\s*|\bsudo\s+)(sudo|ssh|scp|rsync|ping|curl|wget|
                     r"less|more|man|vim|vi|nano|top|htop|watch|kill|pkill|killall|brew|apt|apt-get|pacman|dnf|shutdown|reboot|"
                     r"launchctl|systemctl|osascript|say|afplay|pbcopy|pbpaste|networksetup|softwareupdate|diskutil|mount|umount|"
                     r"caffeinate|screencapture|npm|npx|pip|pip3|python3?\s+-m\s+pip|az|gh|docker|podman)\b")
+# processes are never touched, however the command reaches kill (xargs kill, $(… kill), exec kill …):
+# "ps aux | grep python | … | xargs kill" once killed this script's own runs
+PROCKILL = re.compile(r"\b(kill|pkill|killall|skill|xkill)\b")
 GITNET = re.compile(r"\bgit\s+(push|pull|fetch|clone|remote\s+update)\b")
 FOLLOW = re.compile(r"\btail\s+(-\S*f|--follow)|\bjournalctl\b.*\s-f\b")
 ABSPATH = re.compile(r"(?<![\w~$.])/(?!dev/null\b)(?:[A-Za-z]|$)")
@@ -121,7 +124,11 @@ def tree_digest(root):
             h.update(f"{os.path.relpath(os.path.join(d, x), root)}/\n".encode())
     return h.hexdigest()[:16]
 
+ZSHAI_DIR = ""  # the zshai binary's folder: answers may use  zshai fmt
+
 def run(cmd, cwd, home, path, timeout=10):
+    if ZSHAI_DIR:
+        path = ZSHAI_DIR + ":" + path
     env = {"HOME": home, "PATH": path, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TERM": "dumb", "TZ": "Europe/Oslo"}
     try:
         p = subprocess.run(["zsh", "-f", "-c", cmd], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
@@ -137,9 +144,12 @@ def main():
     ap.add_argument("--server", required=True); ap.add_argument("--model", required=True)
     ap.add_argument("--stock", type=float, default=0.3, help="share of requests run with optional tools hidden")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--seen", default="", help="also skip requests logged in this file (the dropped ones on stderr), to resume")
     ap.add_argument("--no-judge", action="store_true", help="evaluating a model: don't ask the teacher whether vague requests need a question")
     a = ap.parse_args()
     zshai = os.path.abspath(a.zshai)
+    global ZSHAI_DIR
+    ZSHAI_DIR = os.path.dirname(zshai)
     work = tempfile.mkdtemp(prefix="zshai-dg-")
     cfgd, state, cache = (os.path.join(work, x) for x in ("cfg", "state", "cache"))
     os.makedirs(cfgd)
@@ -150,6 +160,14 @@ def main():
         for l in open(a.out):
             j = json.loads(l)
             done.add((j["seed"], j["cwd"], j["request"]))
+    if a.seen and os.path.exists(a.seen):
+        for l in open(a.seen):
+            if l.startswith("{"):
+                try:
+                    j = json.loads(l)
+                    done.add((j["seed"], j["cwd"], j["request"]))
+                except (ValueError, KeyError):
+                    pass
     out = open(a.out, "a")
     reqs = [json.loads(l) for l in open(a.requests)]
     n = kept = 0
@@ -177,8 +195,11 @@ def main():
         db = sqlite3.connect(os.path.join(state, "zshai.db"))
         row = db.execute("SELECT id, outcome FROM turns ORDER BY id DESC LIMIT 1").fetchone()
         calls = db.execute("SELECT prompt, response FROM responses WHERE turn_id=? ORDER BY seq", (row[0],)).fetchall() if row else []
+        tests = db.execute("SELECT command, exit_code, problems, summary FROM tests WHERE turn_id=? ORDER BY seq", (row[0],)).fetchall() if row else []
         db.close()
-        rec = {**q, "os": sys.platform, "stock": stock, "status": st, "calls": len(calls)}
+        rec = {**q, "os": sys.platform, "stock": stock, "status": st, "calls": len(calls),
+               # every model call (prompt sent, raw reply): repair examples are built from these (gen_repairs.py)
+               "trace": [list(c) for c in calls], "tests": [list(t) for t in tests], "final_msg": r.get("msg", "")}
         if not calls or st in ("", "error"):
             rec["drop"] = f"status {st}: {r.get('msg', p.stderr.strip()[:200])}"
             print(json.dumps(rec, ensure_ascii=False), file=sys.stderr, flush=True)
@@ -193,7 +214,7 @@ def main():
         elif st in ("run", "confirm"):
             cmd, level = r["cmd"], r["level"]
             explain = []
-            if NOEXEC.search(cmd) or GITNET.search(cmd) or FOLLOW.search(cmd) or level == "danger":
+            if NOEXEC.search(cmd) or PROCKILL.search(cmd) or GITNET.search(cmd) or FOLLOW.search(cmd) or level == "danger":
                 verified = "not-run"
             elif level == "read":
                 code, so, se = run(cmd, cwd, home, path)

@@ -30,6 +30,25 @@ type Config struct {
 	// Tables: "powershell" (default) prints tables and lists with zshai fmt, the way
 	// PowerShell's Format-Table / Format-List do; "column" keeps column -t tables.
 	Tables string `json:"tables"`
+	// TestRun: run a command that changes files once in a sandboxed copy of the folder
+	// before asking (internal/sandbox); its result is checked and shown in the question.
+	TestRun bool `json:"testRun"`
+	// Typos: when a line's command doesn't exist but is close to one that does ("rn" for
+	// "rm", "gti" for "git"), put the corrected line back in the prompt (internal/typo).
+	Typos bool `json:"typos"`
+	// Escalate: a larger model for the last try ("thinking harder"), when the first
+	// answers failed zshai's checks. Empty = off. E.g. an LM Studio server on the LAN.
+	Escalate Escalation `json:"escalate,omitzero"`
+	// LocalModel: which zshai-mini to run with "server": "local" ("1.5b", "3b");
+	// empty = the best installed one for this machine (internal/localmodel).
+	LocalModel string `json:"localModel,omitempty"`
+}
+
+type Escalation struct {
+	Server         string `json:"server"`
+	Model          string `json:"model"`
+	APIKey         string `json:"apiKey,omitempty"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
 }
 
 func Dir() string {
@@ -83,6 +102,8 @@ func Defaults() Config {
 		Log:            true,
 		Theme:          "auto",
 		Tables:         "powershell",
+		TestRun:        true,
+		Typos:          true,
 	}
 }
 

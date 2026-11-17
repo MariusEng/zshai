@@ -1,0 +1,24 @@
+# MLX-LM fine-tune config for zshai-mini 7b (runs on the training Mac). Data: data/{train,valid}.jsonl (chat).
+# All layers; lr 3e-5 with warmup: 1e-4 diverged on the 0.5B (loss 1.1 -> 6.5 by step 60, v0).
+fine_tune_type: lora
+data: data
+train: true
+mask_prompt: true          # loss only on the answer
+batch_size: 4
+learning_rate: 1.5e-5
+lr_schedule:
+  name: cosine_decay
+  warmup: 30
+  warmup_init: 1.0e-7
+  arguments: [1.5e-5, 1000, 1.0e-6]
+num_layers: -1             # all layers
+max_seq_length: 2048
+steps_per_report: 20
+steps_per_eval: 200
+save_every: 200
+grad_checkpoint: true    # 7b: fits next to the 30B teacher in LM Studio
+seed: 7
+lora_parameters:
+  rank: 32
+  scale: 10.0
+  dropout: 0.05

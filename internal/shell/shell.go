@@ -26,6 +26,8 @@ type Cmd struct {
 	Stmt     *syntax.Stmt   // the statement this command belongs to
 	Remote   string         // host, if this command runs through ssh
 	Assigns  []string       // VAR=value prefixes (names)
+	// InSubshell: inside ( … ), $( … ) or <( … ), so exit only leaves that subshell
+	InSubshell bool
 }
 
 // Redir is a redirection such as "> out.txt".
@@ -33,6 +35,7 @@ type Redir struct {
 	Op     string
 	Target string // literal target ("" if not literal)
 	Lit    bool
+	Raw    string // the target as written, also when it isn't literal (/tmp/navn$i.email)
 }
 
 // Script is a parsed command line.
@@ -90,6 +93,7 @@ func Parse(src string, aliases Aliases) (*Script, error) {
 type walker struct {
 	s       *Script
 	aliases Aliases
+	sub     int // depth of ( … ) / $( … ) around the current command
 }
 
 func (w *walker) stmt(st *syntax.Stmt, pipeFrom *syntax.Stmt, depth int) {
@@ -111,7 +115,9 @@ func (w *walker) stmt(st *syntax.Stmt, pipeFrom *syntax.Stmt, depth int) {
 	case *syntax.Block:
 		w.stmts(c.Stmts, depth)
 	case *syntax.Subshell:
+		w.sub++
 		w.stmts(c.Stmts, depth)
+		w.sub--
 	case *syntax.IfClause:
 		for ic := c; ic != nil; ic = ic.Else {
 			w.stmts(ic.Cond, depth)
@@ -172,12 +178,16 @@ func (w *walker) words(ws []*syntax.Word, depth int) bool {
 			case *syntax.CmdSubst:
 				found = true
 				w.s.HasSubst = true
+				w.sub++
 				w.stmts(x.Stmts, depth+1)
+				w.sub--
 				return false
 			case *syntax.ProcSubst:
 				found = true
 				w.s.HasSubst = true
+				w.sub++
 				w.stmts(x.Stmts, depth+1)
+				w.sub--
 				return false
 			}
 			return true
@@ -187,7 +197,7 @@ func (w *walker) words(ws []*syntax.Word, depth int) bool {
 }
 
 func (w *walker) call(st *syntax.Stmt, c *syntax.CallExpr, redirs []Redir, pipeFrom *syntax.Stmt, depth int) {
-	cmd := &Cmd{Stmt: st, Redirs: redirs, PipeFrom: pipeFrom}
+	cmd := &Cmd{Stmt: st, Redirs: redirs, PipeFrom: pipeFrom, InSubshell: w.sub > 0}
 	for _, a := range c.Assigns {
 		if a.Name != nil {
 			cmd.Assigns = append(cmd.Assigns, a.Name.Value)
@@ -391,12 +401,13 @@ func convRedirs(rs []*syntax.Redirect) []Redir {
 		if r.N != nil {
 			op = r.N.Value + op
 		}
-		var t string
+		var t, raw string
 		var ok bool
 		if r.Word != nil {
 			t, ok = Lit(r.Word)
+			raw = Print(r.Word)
 		}
-		out = append(out, Redir{Op: op, Target: t, Lit: ok})
+		out = append(out, Redir{Op: op, Target: t, Lit: ok, Raw: raw})
 	}
 	return out
 }

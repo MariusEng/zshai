@@ -24,7 +24,7 @@ import (
 	"github.com/MariusEng/zshai/internal/config"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2 // 2: tests (test runs in a sandboxed copy of the folder)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS turns (
@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS effects (         -- what a confirmed command did to 
   size    INTEGER,
   via     TEXT                                -- trash | journal | git | undo
 );
+CREATE TABLE IF NOT EXISTS tests (           -- test runs of a command in a sandboxed copy of the folder
+  id        INTEGER PRIMARY KEY,
+  turn_id   INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  seq       INTEGER NOT NULL,
+  command   TEXT,
+  exit_code INTEGER,
+  timed_out INTEGER NOT NULL DEFAULT 0,
+  denied    INTEGER NOT NULL DEFAULT 0,       -- the sandbox blocked network / outside writes
+  stdout    TEXT,
+  stderr    TEXT,
+  effects   TEXT,                             -- one per line: created|modified|deleted|moved path
+  problems  TEXT,                             -- what the test run sent back to the model, one per line
+  summary   TEXT,                             -- what the user was shown
+  seconds   REAL
+);
+CREATE INDEX IF NOT EXISTS ix_tests_turn ON tests(turn_id);
 CREATE INDEX IF NOT EXISTS ix_turns_started ON turns(started_at);
 CREATE INDEX IF NOT EXISTS ix_responses_turn ON responses(turn_id);
 CREATE INDEX IF NOT EXISTS ix_effects_turn ON effects(turn_id);
@@ -109,15 +125,31 @@ func Open() (*sql.DB, error) {
 			return nil, err
 		}
 		_, _ = db.Exec(fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion))
-		importJSONL(db)
+		if v == 0 {
+			importJSONL(db)
+		}
 	}
 	return db, nil
 }
 
 func iso(t time.Time) string { return t.Format("2006-01-02T15:04:05.000-07:00") }
 
+// Test is one test run in a sandboxed copy of the folder.
+type Test struct {
+	Command          string
+	Exit             int
+	TimedOut, Denied bool
+	Stdout, Stderr   string
+	Effects          []string // "created data.json (0 B)"
+	Problems         []string
+	Summary          string
+	Seconds          float64
+}
+
 // Response is one model call.
 type Response struct {
+	Model    string // when it isn't the turn's model (escalation)
+	System   string // when it isn't the turn's system prompt
 	At       time.Time
 	Prompt   string
 	Response string
@@ -133,6 +165,7 @@ type Turn struct {
 	Repairs                                                                       int
 	FixOf                                                                         string
 	Responses                                                                     []Response
+	Tests                                                                         []Test
 	SystemPrompt                                                                  string
 }
 
@@ -178,12 +211,20 @@ func saveTurn(db *sql.DB, t Turn) {
 		return
 	}
 	for i, r := range t.Responses {
-		sys := ""
-		if i == 0 {
+		sys, model := r.System, r.Model
+		if i == 0 && sys == "" {
 			sys = t.SystemPrompt
 		}
+		if model == "" {
+			model = t.Model
+		}
 		_, _ = tx.Exec(`INSERT INTO responses (turn_id, seq, at, model, system_prompt, prompt, response, seconds, error)
-			VALUES (?,?,?,?,?,?,?,?,?)`, id, i+1, iso(r.At), t.Model, nullable(sys), r.Prompt, r.Response, r.Seconds, nullable(r.Error))
+			VALUES (?,?,?,?,?,?,?,?,?)`, id, i+1, iso(r.At), model, nullable(sys), r.Prompt, r.Response, r.Seconds, nullable(r.Error))
+	}
+	for i, x := range t.Tests {
+		_, _ = tx.Exec(`INSERT INTO tests (turn_id, seq, command, exit_code, timed_out, denied, stdout, stderr, effects, problems, summary, seconds)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, x.Command, x.Exit, x.TimedOut, x.Denied, nullable(x.Stdout), nullable(x.Stderr),
+			nullable(strings.Join(x.Effects, "\n")), nullable(strings.Join(x.Problems, "\n")), nullable(x.Summary), x.Seconds)
 	}
 	_ = tx.Commit()
 }
@@ -313,11 +354,12 @@ func Detail(uid string) (Row, []Response, []Effect, bool) {
 		r.Exit = &e
 	}
 	var resp []Response
-	if rows, err := db.Query(`SELECT at, COALESCE(prompt,''), COALESCE(response,''), COALESCE(seconds,0), COALESCE(error,'') FROM responses WHERE turn_id=? ORDER BY seq`, id); err == nil {
+	if rows, err := db.Query(`SELECT at, COALESCE(prompt,''), COALESCE(response,''), COALESCE(seconds,0), COALESCE(error,''),
+		COALESCE(model,''), CASE WHEN seq > 1 THEN COALESCE(system_prompt,'') ELSE '' END FROM responses WHERE turn_id=? ORDER BY seq`, id); err == nil {
 		for rows.Next() {
 			var x Response
 			var at string
-			if rows.Scan(&at, &x.Prompt, &x.Response, &x.Seconds, &x.Error) == nil {
+			if rows.Scan(&at, &x.Prompt, &x.Response, &x.Seconds, &x.Error, &x.Model, &x.System) == nil {
 				x.At, _ = time.Parse("2006-01-02T15:04:05.000-07:00", at)
 				resp = append(resp, x)
 			}
@@ -335,6 +377,61 @@ func Detail(uid string) (Row, []Response, []Effect, bool) {
 		rows.Close()
 	}
 	return r, resp, eff, true
+}
+
+// Tests returns a turn's test runs.
+func Tests(uid string) []Test {
+	db, err := Open()
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT COALESCE(t.command,''), COALESCE(t.exit_code,0), t.timed_out, t.denied, COALESCE(t.stdout,''),
+		COALESCE(t.stderr,''), COALESCE(t.effects,''), COALESCE(t.problems,''), COALESCE(t.summary,''), COALESCE(t.seconds,0)
+		FROM tests t JOIN turns u ON u.id = t.turn_id WHERE u.uid = ? ORDER BY t.seq`, uid)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Test
+	for rows.Next() {
+		var x Test
+		var eff, probs string
+		if rows.Scan(&x.Command, &x.Exit, &x.TimedOut, &x.Denied, &x.Stdout, &x.Stderr, &eff, &probs, &x.Summary, &x.Seconds) == nil {
+			x.Effects, x.Problems = splitLines(eff), splitLines(probs)
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// TurnInfo is what a debug report needs beyond Detail: problems, error, model, system prompt.
+type TurnInfo struct {
+	Model, Error, Lang, FixOf, SystemPrompt string
+	Problems                                []string
+	TotalSeconds                            float64
+}
+
+func Info(uid string) TurnInfo {
+	var t TurnInfo
+	db, err := Open()
+	if err != nil {
+		return t
+	}
+	defer db.Close()
+	var probs string
+	_ = db.QueryRow(`SELECT COALESCE(model,''), COALESCE(error,''), COALESCE(lang,''), COALESCE(fix_of,''), COALESCE(problems,''),
+		COALESCE(total_seconds,0), COALESCE((SELECT system_prompt FROM responses r WHERE r.turn_id = turns.id AND system_prompt IS NOT NULL
+		ORDER BY seq LIMIT 1),'') FROM turns WHERE uid = ?`, uid).Scan(&t.Model, &t.Error, &t.Lang, &t.FixOf, &probs, &t.TotalSeconds, &t.SystemPrompt)
+	t.Problems = splitLines(probs)
+	return t
+}
+
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
 
 // importJSONL moves the turns.jsonl log of earlier versions into the database once.

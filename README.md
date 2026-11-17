@@ -81,17 +81,26 @@ Copy the binary for that machine to `~/.local/bin/zshai` and the plugin file to
 `zshai: status` warns when they don't match.
 
 ### The built-in model
-`zshai-mini` is a fine-tuned Qwen2.5-Coder-0.5B, quantized to GGUF (about 400 MB). zshai runs it
-with llama.cpp's `llama-server`, which it starts on 127.0.0.1:8093 on the first request and leaves
-running (`zshai model stop` ends it). On a Mac it uses the GPU (Metal); on Linux the CPU is enough.
+`zshai-mini` is a fine-tuned Qwen2.5-Coder, quantized to GGUF (Q4_K_M), in two sizes:
 
-The model weights are too big for git. Each [release](https://github.com/MariusEng/zshai/releases)
-has a bundle with everything for one platform (macOS Apple Silicon, Linux x86_64 with glibc 2.34+):
+| Size | Download | For | Default on |
+|---|---|---|---|
+| `3b` | 1.9 GB | best answers; fast with Apple Silicon's GPU (about 0.5 s a request) | macOS on Apple Silicon |
+| `1.5b` | 1.0 GB | a little less accurate, fast on any machine | Linux and everything else |
+
+zshai runs it with llama.cpp's `llama-server`, which it starts on 127.0.0.1:8093 on the first request
+and leaves running (`zshai model stop` ends it). On a Mac it uses the GPU (Metal); on Linux the CPU.
+`zshai model list` shows the sizes, `zshai model install 1.5b` downloads one and `zshai model use 3b`
+switches (also `zai: modell 3b`).
+
+Each [release](https://github.com/MariusEng/zshai/releases) has a bundle for one platform (macOS
+Apple Silicon, Linux x86_64 with glibc 2.34+); `install.sh` downloads the model that fits the
+machine from the `models-v3` release (checked against its SHA256SUMS):
 ```zsh
-v=0.3.0 p=darwin-arm64    # or linux-amd64
+v=0.5.0 p=darwin-arm64    # or linux-amd64
 curl -LO https://github.com/MariusEng/zshai/releases/download/v$v/zshai-$v-$p.tar.gz
 tar xzf zshai-$v-$p.tar.gz
-zshai-$v-$p/install.sh    # ~/.local/bin/zshai, ~/.local/share/zshai/{llama-server,models/}, the plugin
+zshai-$v-$p/install.sh    # or: install.sh --model 1.5b
 ```
 From source, with a model file in `models/`:
 ```zsh
@@ -109,6 +118,9 @@ source /path/to/zshai.plugin.zsh     # in ~/.zshrc, with the zshai helper on PAT
 
 ## Configure
 Settings live in `~/.config/zshai/config.json`. `zshai: config` shows the file and its contents.
+`zshai: config fixAttempts=2` changes a setting, and `zshai: config typos` shows one. Several pairs
+in one line are fine (`zshai: config escalate.server=http://192.0.2.5:1234/v1 escalate.model=qwen/qwen3-coder-30b`).
+On/off settings take `on`/`off` or `på`/`av`. API keys are never shown.
 The important ones are the model server and the model:
 ```json
 {
@@ -133,6 +145,9 @@ or, with your own model server:
 | `packageManager` | `auto`, `apt`, `pacman`, `brew`, `dnf` |
 | `suggestInstall` | `ask`, `mention` or `never` |
 | `fixAttempts` | How many corrected commands to offer after a failure |
+| `escalate` | A larger model for the last try when zshai-mini's answers fail the checks: `{"server": "http://host:1234/v1", "model": "qwen/qwen3-coder-30b"}` |
+| `testRun` | `true` (default): test-run commands that change files in a sandboxed copy of the folder first (see below) |
+| `typos` | `true` (default): a mistyped command (`rn foo` → `rm foo`, `gti`, `sl`, `cd..`) is corrected in the prompt, Enter runs it; after "command not found" (a typo after a pipe) the fix is ready on the next line. `zshai: typos on\|off` |
 | `tables` | `powershell` (default): tables and lists of records print PowerShell-style with `zshai fmt`; `column`: keep `column -t` tables |
 | `protectedSubscriptions` | Azure subscriptions where every change counts as dangerous |
 | `log` | `false` turns the SQLite log off |
@@ -182,6 +197,32 @@ zshai fmt -t orders.json        # JSON / JSON Lines / CSV as a PowerShell-style 
 zshai --version
 ```
 
+### Test runs in a sandbox
+Before zshai asks about a command that changes files, it runs it once in a throwaway copy of the
+current folder. The copy has no network and no keyboard input, the run gets 3 seconds, and the command
+can't write anywhere else. Then zshai compares the copy before and after:
+- If the command fails there, or leaves a broken result, the model has to fix it first. A broken
+  result is JSON that doesn't parse, JSON Lines in a `.json` file, CSV rows with the wrong number of
+  fields, or an empty data file.
+- The question shows what the test run did, so you know what you're saying yes to:
+  ```
+  ▸ cat > contacts.json <<'EOF' …   [endring]
+  Testkjørt i en kopi av mappa: lager contacts.json (5 elementer, gyldig JSON).
+  Kjøre?  ja / nei / vis / endre >
+  ```
+- A command that needs the network or files outside the folder is only partly tested, and the question
+  says so. Commands whose effects aren't files in the folder are never test-run: `sudo`, `ssh`,
+  package managers, `open`, `defaults`, `kill`, `git push`/`pull`, editors and so on.
+
+The sandbox:
+- **macOS:** `sandbox-exec`. The folder is cloned (APFS copy-on-write, instant at any size). Writes
+  outside the clone, network and system services are denied.
+- **Linux:** `bubblewrap` (`sudo apt install bubblewrap`). The copy is mounted over the folder's path
+  and the rest of the system is read-only. Without bubblewrap nothing is test-run: Ubuntu blocks
+  other unprivileged sandboxes.
+
+`zshai: status` shows which sandbox is in use. Folders with more than 20,000 entries aren't copied.
+
 ### PowerShell-style tables: `zshai fmt`
 `zshai fmt` prints records the way PowerShell prints objects after `ConvertFrom-Json` or `Import-Csv`.
 With no option it picks like PowerShell does: a table for up to 4 properties, a list for more.
@@ -201,6 +242,15 @@ id customer     total                             name  : Kari
 - It reads files or stdin, so it works after jq: `jq 'map(select(.total > 100))' orders.json | zshai fmt -t`.
 - The model is told to use it. zshai-mini was trained on `jq … | column -t` tables, so zshai rewrites
   those recipes to `zshai fmt -t` (turn off with `"tables": "column"`).
+
+### Archives and 7-Zip
+
+When a request names an archive (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.7z`, `.rar`), zshai
+tells the model what is inside: the number of files, the unpacked size, the top-level entries and the
+first file names. `.7z` and `.rar` are read with the installed 7-Zip. 7-Zip is `7zz` on macOS
+(`brew install sevenzip`) and usually `7z` on Linux. Whatever name the model writes (`7z`, `7zz`, `7za`)
+becomes the one installed here. The output folder must be glued to the switch (`-oout`), so a `-o out`
+written by the model is fixed before anything runs.
 
 ## Privacy
 - Requests go only to the model server in your config.
@@ -256,14 +306,17 @@ through zshai itself, so it learns zshai's context, rules and answer format:
 4. **Dataset** (`datagen/build_dataset.py`): the first prompt zshai sent and the final, checked
    answer, with the default system prompt (`zshai: prompt`) rendered for that machine.
 5. **Training** (`train/run-mac.sh`, on an Apple Silicon Mac with mlx-lm): LoRA on all layers of
-   Qwen2.5-Coder-0.5B-Instruct (`train/lora.yaml`), fused, converted to GGUF with llama.cpp and
-   quantized to Q4_K_M.
+   Qwen2.5-Coder-1.5B/3B-Instruct (`train/lora-1.5b.yaml`, `train/lora-3b.yaml`), fused, converted
+   to GGUF with llama.cpp and quantized to Q4_K_M.
+   Round 2 added *repair* examples (`datagen/gen_repairs.py`: the small model's real failed answer,
+   zshai's feedback, the teacher's checked answer) and table/list examples with known answers
+   (`datagen/gen_fmt.py`, run through zshai with a stand-in model).
 6. **Evaluation** (`datagen/bench.jsonl`, `datagen/compare.py`): 48 hand-written requests in two
    fixture homes never used for training, run through zshai with the student and the teacher.
    *valid* = passed zshai's checks and ran; *match* = did what the teacher did (same output, same
    files afterwards, or same kind of answer).
 
-Results (Linux CPU numbers on an 8-core Skylake; Mac on an M5 Pro with Metal):
+Round 1 results (Linux CPU numbers on an 8-core Skylake; Mac on an M5 Pro with Metal):
 
 | Model | Size | Data | Bench (48): valid / match | Held-out (181): valid / match / first try | Time per request |
 |---|---|---|---|---|---|
@@ -272,10 +325,24 @@ Results (Linux CPU numbers on an 8-core Skylake; Mac on an M5 Pro with Metal):
 | zshai-mini 0.5B v0b | 398 MB | 343 | 0.83 / 0.47 | — | — |
 | zshai-mini 1.5B v1 | 986 MB | 1,523 | 0.89 / 0.64 | — | Linux 3.4 s |
 | zshai-mini 0.5B v1 | 398 MB | 1,523 | 0.94 / 0.68 | 0.91 / 0.63 / 0.89 | Linux 1.3 s |
-| **zshai-mini 0.5B v2** (shipped) | **398 MB** | **2,821** | **0.94 / 0.66** | **0.93 / 0.65 / 0.92** | **Linux 1.5 s, Mac 0.3 s** |
+| **zshai-mini 0.5B v2** (shipped in 0.3–0.4) | **398 MB** | **2,821** | **0.94 / 0.66** | **0.93 / 0.65 / 0.92** | **Linux 1.5 s, Mac 0.3 s** |
 
-Times are a whole `zshai ask` (context, model, checks) with the model warm; the first request after a
-start adds 1–5 s to load it. The 1.5B was not better on this data, so the 0.5B ships. 4-bit (Q4_K_M)
+Round 2 (3,900 examples; 310 requests: the bench, held-out requests and new create/table requests,
+scored on the 275 the teacher passed; Mac M5 Pro, model time only):
+
+| Model | Size | Valid | First try | Tables/lists valid | Create a file valid | Time |
+|---|---|---|---|---|---|---|
+| zshai-mini 0.5B v2 | 398 MB | 0.90 | 0.87 | 0.90 | 0.70 | 0.18 s |
+| **zshai-mini 1.5B v3** (shipped) | **986 MB** | **0.94** | **0.90** | **0.95** | **0.78** | **0.29 s** |
+| zshai-mini 3B v3 | 1.9 GB | 0.95 | 0.93 | 0.81 | 0.96 | 0.46 s |
+| **zshai-mini 3B v4** (shipped) | **1.9 GB** | **0.96** | **0.95** | **0.95** | **0.87** | **0.46 s** |
+| zshai-mini 7B v3 | 4.7 GB | 0.86 | 0.76 | 0.62 | 0.91 | 0.88 s |
+
+The 7B was undertrained (too low a learning rate) and is not shipped. 3B v4 is 3B v3 plus the
+table/list examples.
+
+Times in the round-1 table are a whole `zshai ask` (context, model, checks) with the model warm; the
+first request after a start adds 1–5 s to load it. 4-bit (Q4_K_M)
 scored the same as 8-bit (Q8_0, 531 MB). "match" is strict: many non-matching answers are different
 but correct commands (`grep -r` vs `find -exec grep`).
 

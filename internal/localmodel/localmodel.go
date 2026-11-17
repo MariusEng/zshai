@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,20 +59,12 @@ func DataDirs() []string {
 	return append(ds, filepath.Join(base, "zshai"))
 }
 
-// Files finds llama-server and the newest zshai-mini model.
+// Files finds llama-server and the model to run (Pick).
 func Files() (server, model string, err error) {
 	for _, d := range DataDirs() {
-		if model == "" {
-			ms, _ := filepath.Glob(filepath.Join(d, "models", "zshai-mini*.gguf"))
-			if len(ms) > 0 {
-				sort.Strings(ms)
-				model = ms[len(ms)-1]
-			}
-		}
-		if server == "" {
-			if p := filepath.Join(d, "llama-server"); isExec(p) {
-				server = p
-			}
+		if p := filepath.Join(d, "llama-server"); isExec(p) {
+			server = p
+			break
 		}
 	}
 	if server == "" {
@@ -81,13 +72,9 @@ func Files() (server, model string, err error) {
 			server = p
 		}
 	}
-	switch {
-	case model == "" && server == "":
-		err = errors.New("the zshai-mini model and llama-server are not installed (make install-model, or set \"server\" in the config)")
-	case model == "":
-		err = errors.New("the zshai-mini model is not installed (make install-model, or set \"server\" in the config)")
-	case server == "":
-		err = errors.New("llama-server is not installed (make install-model)")
+	_, model, err = Pick()
+	if err == nil && server == "" {
+		err = errors.New("llama-server is not installed (run the release's install.sh)")
 	}
 	return
 }
@@ -124,8 +111,17 @@ func PID() int {
 	return pid
 }
 
-// Ensure starts the server if it isn't running and waits until it answers.
+func modelFile() string { return filepath.Join(config.StateDir(), "llama-server.model") }
+
+// Ensure starts the server if it isn't running and waits until it answers. A server that
+// runs another model than the one chosen now (zshai model use 3b) is restarted.
 func Ensure(wait time.Duration) error {
+	if _, model, err := Files(); err == nil && PID() > 0 {
+		if b, _ := os.ReadFile(modelFile()); string(b) != model {
+			Stop()
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
 	if Healthy() {
 		return nil
 	}
@@ -173,6 +169,7 @@ func Start() error {
 		return err
 	}
 	_ = os.WriteFile(pidFile(), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	_ = os.WriteFile(modelFile(), []byte(model), 0o644)
 	return cmd.Process.Release()
 }
 

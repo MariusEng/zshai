@@ -344,6 +344,9 @@ func firstKey(obj []byte) string {
 // CSV delimiter, …) and its first lines, so a jq/awk/column command fits the real structure.
 func headLine(p string) string {
 	ext := strings.ToLower(filepath.Ext(p))
+	if a := archiveLine(p); a != "" {
+		return a
+	}
 	if !peekExt[ext] || secretName.MatchString(filepath.Base(p)) {
 		return ""
 	}

@@ -28,13 +28,13 @@ typeset -g _zshai_last_cmd='' _zshai_accept=.accept-line _zshai_show='' _zshai_a
 typeset -gi _zshai_last_exit=0 _zshai_dumped=0
 # "zshai: …" always goes to zshai. With auto-detect on (zshai: auto på), plain-language
 # lines without the prefix do too.
-typeset -g _zshai_auto=0 _zshai_fix=0 _zshai_errfile='' _zshai_errfd=''
+typeset -g _zshai_auto=0 _zshai_fix=0 _zshai_typos=1 _zshai_errfile='' _zshai_errfd=''
 typeset -ga _zshai_fixq
 _zshai_settings() {
   emulate -L zsh
   local s
   s=$("$ZSHAI_BIN" settings 2>/dev/null)
-  [[ $s == _zshai_auto=[01]' '_zshai_fix=[01] ]] && eval "$s"
+  [[ $s == _zshai_auto=[01]' '_zshai_fix=[01](' '_zshai_typos=[01]|) ]] && eval "$s"
 }
 _zshai_settings
 
@@ -237,9 +237,17 @@ _zshai_turn() {
   req=${req##[[:space:]]#}
   req=${req#\?}
   req=${req##[[:space:]]#}
+  # "? zai: …": typed after the "? " zshai puts in the prompt for an answer
+  req=${req#(zshai|zai):}
+  req=${req##[[:space:]]#}
   _zshai_dump
   [[ $line == [[:space:]]* ]] || print -s -- "$line"   # the request goes into history too
-  _zshai_handle ask --cwd "$PWD" --last "$_zshai_last_cmd" --exit "$_zshai_last_exit" -- "$req"
+  # "zshai: …" / "zai: …" is always a new request; only "?…" (or a plain line in auto mode)
+  # answers a question zshai asked. Else "zai: ssh til server" became the answer to an old
+  # "which files should I delete?", and the model joined the two into ssh … rm -rf.
+  local -a new=()
+  [[ $line == [[:space:]]#([?][[:space:]]#|)(zshai|zai):* ]] && new=(--new)
+  _zshai_handle ask --cwd "$PWD" --last "$_zshai_last_cmd" --exit "$_zshai_last_exit" $new -- "$req"
 }
 
 # Ask the helper (ask … or a fix) and act on its answer.
@@ -267,6 +275,7 @@ _zshai_handle() {
     (confirm|install)
       _zshai_say $ZSHAI_COLORS[note] "▸ ${zshai_r[cmd]}   [${zshai_r[label]}]"
       [[ -n ${zshai_r[note]-} ]] && _zshai_say $ZSHAI_COLORS[danger] "${zshai_r[note]}"
+      [[ -n ${zshai_r[tested]-} ]] && _zshai_say $ZSHAI_COLORS[note] "${zshai_r[tested]}"
       _zshai_confirm ;;
     (show)
       # learn mode: print the command and what it does; never run it
@@ -340,9 +349,69 @@ _zshai_confirm() {
   done
 }
 
+# "rn foo.txt" → "rm foo.txt": when the line's command doesn't exist but is close to one
+# that does, put the corrected line in the prompt (internal/typo; no model, ~10 ms). Enter
+# runs it, or the user edits it. Requests ("vis filene", "show me …") are left alone.
+_zshai_typo() {
+  emulate -L zsh
+  setopt extended_glob
+  [[ $_zshai_typos == 1 ]] || return 1
+  local line=${1##[[:space:]]#}
+  [[ -z $line || $line == [?,!#]* ]] && return 1
+  local -a w
+  w=( ${(z)line} )
+  local first=${(Q)w[1]}
+  [[ ( $first == sudo || $first == doas ) && $#w -gt 1 ]] && first=${(Q)w[2]}
+  _zshai_is_cmd "$first" && return 1
+  _zshai_dump
+  local out
+  out=$("$ZSHAI_BIN" typo -- "$1" 2>/dev/null) || return 1
+  _zshai_eval "$out"
+  [[ ${zshai_r[status]-} == typo && -n ${zshai_r[fixed]-} ]] || return 1
+  zle -I
+  print -r -- $'\e['"${ZSHAI_COLORS[note]-90}"'m'"${zshai_r[msg]}"$'\e[0m'
+  BUFFER=${zshai_r[fixed]}
+  CURSOR=$#BUFFER
+  return 0
+}
+
+# "command not found" that got past the check above (a typo after a pipe, ;, &&): say
+# what was meant and put the corrected line in the next prompt. Runs in a subshell for a
+# pipe, so the fix goes through a file that line-init picks up. A handler the system had
+# (Ubuntu's command-not-found, Homebrew's) still runs when there is no suggestion.
+if (( ${+functions[command_not_found_handler]} )) && [[ ${functions[command_not_found_handler]} != *_zshai_cnf* ]]; then
+  functions[_zshai_orig_cnf]=${functions[command_not_found_handler]}
+fi
+_zshai_cnf() {
+  emulate -L zsh
+  [[ $_zshai_typos == 1 && -o interactive ]] || return 1
+  local whole=${history[$HISTCMD]-} out
+  out=$("$ZSHAI_BIN" typo --not-found --line "$whole" -- "$@" 2>/dev/null) || return 1
+  local -A zshai_r
+  [[ $out == 'zshai_r=('* ]] || return 1
+  eval "$out"
+  [[ -n ${zshai_r[fixed]-} ]] || return 1
+  print -u2 -r -- "zsh: command not found: $1"
+  print -u2 -r -- $'\e['"${ZSHAI_COLORS[note]-90}"'m'"${zshai_r[msg]}"$'\e[0m'
+  [[ -d $_zshai_cache ]] || mkdir -p -m 700 $_zshai_cache
+  print -r -- "${zshai_r[fixed]}" >| $_zshai_cache/typo.$$
+  return 0
+}
+command_not_found_handler() {
+  _zshai_cnf "$@" && return 127
+  if (( ${+functions[_zshai_orig_cnf]} )); then
+    _zshai_orig_cnf "$@"
+    return
+  fi
+  print -u2 -r -- "zsh: command not found: $1"
+  return 127
+}
+
 zshai-accept-line() {
   setopt local_options extended_glob
   local line=$BUFFER
+  # "? zai: …": a new request typed after the "? " zshai leaves for an answer
+  [[ $line == [[:space:]]#[?][[:space:]]#(zshai|zai):* ]] && line=${${line#*[?]}##[[:space:]]#}
   case $line in
     ([[:space:]]#,*)
       BUFFER=${line#*,}
@@ -384,6 +453,10 @@ zshai-accept-line() {
         return
       fi ;;
   esac
+  # a mistyped command ("rn foo", "gti status"): the fixed line goes back in the prompt
+  if [[ $line != [[:space:]]#(zshai|zai):* ]] && _zshai_typo "$line"; then
+    return
+  fi
   if [[ $line != [[:space:]]#(zshai|zai):* ]] && ! _zshai_route "$line"; then
     zle $_zshai_accept
     return
@@ -483,6 +556,13 @@ add-zsh-hook preexec _zshai_preexec
 
 # After an install that zshai suggested, finish the original request.
 _zshai_line_init() {
+  # a typo fixed after "command not found" (_zshai_cnf): ready to run or edit
+  if [[ -s $_zshai_cache/typo.$$ ]]; then
+    BUFFER=$(<$_zshai_cache/typo.$$)
+    CURSOR=$#BUFFER
+    rm -f -- $_zshai_cache/typo.$$
+    return
+  fi
   # a fixed command the user confirmed in precmd
   if [[ -n $_zshai_autorun ]]; then
     BUFFER=$_zshai_autorun

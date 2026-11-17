@@ -136,6 +136,7 @@ func cmdFmt(args []string) int {
 		files = []string{"-"}
 	}
 	var recs []any
+	var parts []part
 	single := len(files) == 1
 	for _, f := range files {
 		var b []byte
@@ -161,11 +162,18 @@ func cmdFmt(args []string) int {
 			var rows []any
 			rows, err = psfmt.ParseCSV(b, d)
 			v = rows
+			if err == nil && len(rows) == 0 {
+				// like Import-Csv: a header without rows prints nothing
+				fmt.Fprintf(os.Stderr, "zshai fmt: %s has a header line but no rows\n", name)
+			}
 		} else {
 			v, err = psfmt.ParseJSON(b)
-			if err != nil {
+			if err != nil && err != psfmt.ErrEmpty {
 				err = fmt.Errorf("%s is not JSON (%v); for CSV use --csv", name, err)
 			}
+		}
+		if err == psfmt.ErrEmpty {
+			err = fmt.Errorf("%s is empty (%d bytes)", name, len(b))
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "zshai fmt:", err)
@@ -175,14 +183,51 @@ func cmdFmt(args []string) int {
 			fmt.Print(psfmt.Format(v, o))
 			return 0
 		}
-		if arr, ok := v.([]any); ok {
+		parts = append(parts, part{name, v})
+	}
+	// files with the same columns are one table (parts of one export); different files
+	// each get their own, under their name (zshai fmt -t *.csv)
+	same := true
+	for _, p := range parts[1:] {
+		if shape(p.v) != shape(parts[0].v) {
+			same = false
+		}
+	}
+	if !same {
+		for i, p := range parts {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("%s:\n", p.name)
+			fmt.Print(psfmt.Format(p.v, o))
+		}
+		return 0
+	}
+	for _, p := range parts {
+		if arr, ok := p.v.([]any); ok {
 			recs = append(recs, arr...)
 		} else {
-			recs = append(recs, v)
+			recs = append(recs, p.v)
 		}
 	}
 	fmt.Print(psfmt.Format(recs, o))
 	return 0
+}
+
+type part struct {
+	name string
+	v    any
+}
+
+// shape: the property names of a file's first record ("" for anything else).
+func shape(v any) string {
+	if arr, ok := v.([]any); ok && len(arr) > 0 {
+		v = arr[0]
+	}
+	if obj, ok := v.(*psfmt.Object); ok {
+		return strings.Join(obj.Keys, "\x00")
+	}
+	return ""
 }
 
 // termWidth: stdout's terminal, else $COLUMNS, else wide enough to never cut (a file).

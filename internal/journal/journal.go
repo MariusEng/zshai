@@ -98,6 +98,7 @@ type Turn struct {
 	Error                               string
 	Problems                            []string
 	Calls                               []store.Response
+	Tests                               []store.Test
 	ModelMs, TotalMs                    int64
 }
 
@@ -105,7 +106,7 @@ func LogTurn(t Turn) {
 	store.SaveTurn(store.Turn{UID: t.ID, Started: t.Start, Cwd: t.Cwd, Lang: t.Lang, Request: t.Request, Script: t.Command,
 		Model: t.Model, ModelRisk: t.ModelRisk, Risk: t.Risk, Mode: t.Mode, Outcome: t.Outcome, Error: t.Error,
 		Problems: t.Problems, ModelSeconds: float64(t.ModelMs) / 1000, TotalSeconds: float64(t.TotalMs) / 1000,
-		Repairs: max(len(t.Calls)-1, 0), FixOf: t.FixOf, Responses: t.Calls, SystemPrompt: llmSystem})
+		Repairs: max(len(t.Calls)-1, 0), FixOf: t.FixOf, Responses: t.Calls, Tests: t.Tests, SystemPrompt: llmSystem})
 }
 
 // llmSystem is set by the helper (journal must not import llm's client).
